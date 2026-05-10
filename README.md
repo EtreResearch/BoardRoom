@@ -23,9 +23,27 @@ python boardroom.py "An AI app that generates personalized bedtime stories for k
 
 Optional flags:
 
+- `--tui` — launch a full-screen Textual UI (chat log + agent roster + live tally).
 - `--rounds N` — number of discussion rounds before the verdict (default 3).
 - `--model ID` — override the model for all agents (e.g. `claude-haiku-4-5-20251001`).
 - `--config PATH` — use a different agents file.
+
+## TUI mode
+
+```bash
+python boardroom.py --tui "An AI app that generates personalized bedtime stories for kids."
+```
+
+A polished interface opens in your terminal:
+
+- **Header** — title and idea
+- **Chat log** (left) — finalized turns scroll by; the in-flight turn streams into a panel pinned at the bottom
+- **Sidebar** (right) — each agent's live status (`pending` → `speaking…` → `done` / `voted GOOD|BAD`) and a running tally
+- **Footer** — key bindings
+
+Key bindings:
+- `q` — quit
+- `s` — save the transcript so far to `transcript-YYYYMMDD-HHMMSS.md`
 
 ## Customizing the executives
 
