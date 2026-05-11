@@ -214,7 +214,7 @@ class BoardRoomApp(App):
         else:
             sub.update(f"[dim]Round {self._round} of {self.rounds}[/]")
 
-    @work(exclusive=True, group="discussion")
+    @work(exclusive=True)
     async def _run_discussion(self) -> None:
         self._client = AsyncAnthropic()
         focal = self.query_one(FocalCard)
