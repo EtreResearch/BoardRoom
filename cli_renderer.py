@@ -11,6 +11,7 @@ from typing import AsyncIterator
 
 from rich.console import Console
 from rich.rule import Rule
+from rich.text import Text
 
 from engine import (
     Agent,
@@ -46,7 +47,7 @@ async def render(
             order_text = " → ".join(event.order)
             console.print(
                 Rule(
-                    f"Round {event.n} of {event.total}  ·  {order_text}",
+                    Text(f"Round {event.n} of {event.total}  ·  {order_text}"),
                     style="dim",
                 )
             )

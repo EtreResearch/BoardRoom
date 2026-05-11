@@ -187,7 +187,7 @@ async def run_boardroom(
     ordered: bool = False,
     seed: int | None = None,
 ) -> AsyncIterator[Event]:
-    rng = random.Random(seed) if seed is not None else random
+    rng = random.Random(seed)
     transcript: list[Turn] = []
 
     for n in range(1, rounds + 1):

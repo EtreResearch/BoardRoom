@@ -239,8 +239,11 @@ class BoardRoomApp(App):
             if isinstance(event, RoundStart):
                 order_text = " → ".join(event.order)
                 chat.write(
-                    f"[dim]── Round {event.n} of {event.total}  ·  "
-                    f"{order_text} ──[/]"
+                    Text(
+                        f"── Round {event.n} of {event.total}  ·  "
+                        f"{order_text} ──",
+                        style="dim",
+                    )
                 )
 
             elif isinstance(event, VerdictRoundStart):
