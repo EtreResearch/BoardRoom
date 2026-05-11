@@ -34,15 +34,23 @@ Optional flags:
 python boardroom.py --tui "An AI app that generates personalized bedtime stories for kids."
 ```
 
-A polished interface opens in your terminal:
+The interface runs in **focus mode** — calm and one-at-a-time:
 
 - **Header** — title and idea
-- **Chat log** (left) — finalized turns scroll by; the in-flight turn streams into a panel pinned at the bottom
-- **Sidebar** (right) — each agent's live status (`pending` → `speaking…` → `done` / `voted GOOD|BAD`) and a running tally
+- **Sub-header** — current phase (`Round 2 of 3`, `Final verdicts`, `Decision`)
+- **Focal card** — a single large centered card showing only the current
+  speaker. The border picks up that agent's color and their words stream
+  in live. When they finish, the next speaker fades in.
+- **Status row** — a single compact line at the bottom showing every
+  agent's state (○ pending · ◐ speaking · ● done · ✓ GOOD · ✗ BAD) plus
+  the running tally. When the discussion ends, the focal card transforms
+  into a final verdict banner.
 - **Footer** — key bindings
 
 Key bindings:
 - `q` — quit
+- `h` — toggle the history overlay (scrollable list of every past turn;
+  the live discussion continues underneath, press `h` or `esc` to return)
 - `s` — save the transcript so far to `transcript-YYYYMMDD-HHMMSS.md`
 
 ## Customizing the executives

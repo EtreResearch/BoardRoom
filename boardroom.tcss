@@ -1,59 +1,90 @@
 Screen {
     background: $surface;
-}
-
-#main {
-    height: 1fr;
-    layout: horizontal;
-}
-
-#chat-column {
-    width: 1fr;
     layout: vertical;
 }
 
-#chat {
-    height: 1fr;
-    padding: 1 2;
-    background: $surface;
+#sub-header {
+    height: 1;
+    content-align: center middle;
+    color: $text-muted;
+    margin: 1 0 0 0;
 }
 
-#current {
+#stage {
+    height: 1fr;
+    align: center middle;
+    padding: 1 2;
+}
+
+FocalCard {
+    width: 80%;
+    max-width: 110;
+    min-height: 14;
     height: auto;
-    min-height: 3;
-    max-height: 12;
-    padding: 1 2;
-    margin: 0 1 1 1;
-    border: round $accent;
-    background: $boost;
-}
-
-#sidebar {
-    width: 34;
-    layout: vertical;
-    border-left: solid $primary;
-    padding: 1 2;
+    padding: 2 4;
+    border: round $primary;
     background: $surface;
-}
-
-.section-title {
-    margin-bottom: 1;
     color: $text;
-    text-style: bold;
+    content-align: left top;
 }
 
-.roster-row {
+#status-row {
+    height: 3;
+    padding: 0 2;
+    background: $boost;
+    border-top: solid $primary;
+    layout: horizontal;
+    align: center middle;
+}
+
+.status-dot {
+    width: auto;
+    margin: 0 2;
+    content-align: center middle;
+}
+
+#status-tally {
+    width: auto;
+    margin-left: 4;
+    content-align: center middle;
+}
+
+HistoryScreen {
+    align: center middle;
+    background: rgba(0, 0, 0, 0.6);
+}
+
+#history-container {
+    width: 80%;
+    max-width: 120;
+    height: 80%;
+    background: $surface;
+    border: thick $primary;
+    padding: 1 2;
+    layout: vertical;
+}
+
+#history-title {
     height: 1;
     margin-bottom: 1;
 }
 
-#roster {
-    height: auto;
-    margin-bottom: 2;
+#history-scroll {
+    height: 1fr;
+    border: solid $boost;
+    padding: 1 2;
 }
 
-#tally {
+.history-turn {
     height: auto;
-    border: round $primary;
     padding: 1 2;
+    margin-bottom: 1;
+    border-left: thick $primary;
+    background: $boost;
+}
+
+.history-empty {
+    content-align: center middle;
+    color: $text-muted;
+    padding: 2 0;
 }

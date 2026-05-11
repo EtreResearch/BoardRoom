@@ -1,7 +1,10 @@
-"""Textual TUI for BoardRoom.
+"""Textual TUI for BoardRoom — focus mode.
 
-Layout: header · (chat log + in-flight panel | sidebar with roster + tally) · footer.
-A background worker iterates the engine's event stream and updates widgets.
+One centered card shows only the current speaker streaming live. A compact
+status row at the bottom tracks all four agents (○ pending, ◐ speaking,
+● done, ✓ voted GOOD, ✗ voted BAD) plus the running tally. Press `h` to
+toggle a scrollable history overlay; the live discussion keeps running
+underneath.
 """
 
 from __future__ import annotations
@@ -13,8 +16,9 @@ from anthropic import AsyncAnthropic
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Header, RichLog, Static
+from textual.containers import Center, Container, VerticalScroll
+from textual.screen import ModalScreen
+from textual.widgets import Footer, Header, Static
 
 from engine import (
     Agent,
@@ -30,90 +34,136 @@ from engine import (
     run_boardroom,
 )
 
-STATUS_LABELS = {
-    "pending": "[dim]pending[/]",
-    "speaking": "[yellow]speaking…[/]",
-    "done": "[dim]done[/]",
-    "voted_good": "[green]voted GOOD[/]",
-    "voted_bad": "[red]voted BAD[/]",
-    "voted_unclear": "[yellow]voted ?[/]",
-}
+
+def _slug(role: str) -> str:
+    return role.lower().replace(" ", "-")
 
 
-class AgentRoster(Vertical):
-    """Sidebar widget showing each agent's current status."""
-
-    def __init__(self, agents: list[Agent]) -> None:
-        super().__init__(id="roster")
-        self.agents = agents
-        self.statuses: dict[str, str] = {a.role: "pending" for a in agents}
-
-    def compose(self) -> ComposeResult:
-        yield Static("[b]Agents[/]", classes="section-title")
-        for agent in self.agents:
-            yield Static(
-                self._render(agent),
-                id=f"role-{self._slug(agent.role)}",
-                classes="roster-row",
-            )
-
-    def update_status(self, role: str, status: str) -> None:
-        self.statuses[role] = status
-        agent = next(a for a in self.agents if a.role == role)
-        widget = self.query_one(f"#role-{self._slug(role)}", Static)
-        widget.update(self._render(agent))
-
-    def _render(self, agent: Agent) -> str:
-        status = self.statuses[agent.role]
-        return f"[bold {agent.color}]●[/] {agent.role:<14} {STATUS_LABELS[status]}"
-
-    @staticmethod
-    def _slug(role: str) -> str:
-        return role.lower().replace(" ", "-")
-
-
-class TallySummary(Static):
-    """Sidebar widget showing live and final vote tally."""
+class FocalCard(Static):
+    """The single centered card showing the current speaker."""
 
     def __init__(self) -> None:
-        super().__init__("", id="tally")
+        super().__init__("", id="focal")
+        self.border_title = " — "
+
+    def show_idle(self) -> None:
+        self.border_title = " Preparing "
+        self.styles.border = ("round", "grey50")
+        self.update(Text("Waiting for the discussion to begin…", style="italic dim"))
+
+    def set_speaker(self, role: str, color: str) -> None:
+        self.border_title = f"  ●  {role}  "
+        self.styles.border = ("round", color)
+        self.update(Text(""))
+
+    def show_text(self, text: str) -> None:
+        self.update(Text(text))
+
+    def show_verdict(self, overall: str, good: int, bad: int) -> None:
+        color = {"GOOD": "bright_green", "BAD": "bright_red", "SPLIT": "yellow"}[overall]
+        self.border_title = "  Final verdict  "
+        self.styles.border = ("heavy", color)
+        body = Text()
+        body.append("\n")
+        body.append(f"  {overall}  \n", style=f"bold {color}")
+        body.append("\n")
+        body.append(f"Tally: {good} GOOD · {bad} BAD", style="dim")
+        self.update(body)
+
+
+class StatusRow(Container):
+    """Single-line status indicator showing every agent + running tally."""
+
+    def __init__(self, agents: list[Agent]) -> None:
+        super().__init__(id="status-row")
+        self.agents = agents
+        self.statuses: dict[str, str] = {a.role: "pending" for a in agents}
         self.good = 0
         self.bad = 0
-        self.overall: str | None = None
-        self.update(self._render())
+
+    def compose(self) -> ComposeResult:
+        for agent in self.agents:
+            yield Static(
+                self._render_agent(agent),
+                id=f"dot-{_slug(agent.role)}",
+                classes="status-dot",
+            )
+        yield Static(self._render_tally(), id="status-tally")
+
+    def update_agent(self, role: str, status: str) -> None:
+        self.statuses[role] = status
+        agent = next(a for a in self.agents if a.role == role)
+        self.query_one(f"#dot-{_slug(role)}", Static).update(self._render_agent(agent))
 
     def add_vote(self, verdict: str) -> None:
         if verdict == "GOOD":
             self.good += 1
         elif verdict == "BAD":
             self.bad += 1
-        self.update(self._render())
+        self.query_one("#status-tally", Static).update(self._render_tally())
 
-    def finalize(self, good: int, bad: int, overall: str) -> None:
-        self.good = good
-        self.bad = bad
-        self.overall = overall
-        self.update(self._render())
+    def reset_for_verdicts(self) -> None:
+        for a in self.agents:
+            self.statuses[a.role] = "pending"
+            self.query_one(f"#dot-{_slug(a.role)}", Static).update(self._render_agent(a))
 
-    def _render(self) -> str:
-        body = f"{self.good} GOOD / {self.bad} BAD"
-        if self.overall is None:
-            return f"[b]Tally[/]\n\n{body}"
-        styled = {
-            "GOOD": "[bold green]GOOD[/]",
-            "BAD": "[bold red]BAD[/]",
-            "SPLIT": "[bold yellow]SPLIT[/]",
-        }[self.overall]
-        return f"[b]Tally[/]\n\n{body}\n\nVerdict: {styled}"
+    def _render_agent(self, agent: Agent) -> str:
+        status = self.statuses[agent.role]
+        if status == "pending":
+            return f"[grey50]○ {agent.role}[/]"
+        if status == "speaking":
+            return f"[bold {agent.color}]◐ {agent.role}[/]"
+        if status == "done":
+            return f"[{agent.color}]● {agent.role}[/]"
+        if status == "voted_good":
+            return f"[green]✓ {agent.role}[/]"
+        if status == "voted_bad":
+            return f"[red]✗ {agent.role}[/]"
+        return f"[yellow]? {agent.role}[/]"
+
+    def _render_tally(self) -> str:
+        return f"[green]{self.good} GOOD[/] · [red]{self.bad} BAD[/]"
+
+
+class HistoryScreen(ModalScreen):
+    """Scrollable overlay listing every past turn. Live discussion keeps going underneath."""
+
+    BINDINGS = [
+        ("h", "dismiss", "Close"),
+        ("escape", "dismiss", "Close"),
+    ]
+
+    def __init__(self, transcript: list[Turn], color_for) -> None:
+        super().__init__()
+        self.transcript = transcript
+        self.color_for = color_for
+
+    def compose(self) -> ComposeResult:
+        with Container(id="history-container"):
+            yield Static(
+                "[b]Discussion history[/]   [dim](press h or esc to return — live continues)[/]",
+                id="history-title",
+            )
+            with VerticalScroll(id="history-scroll"):
+                if not self.transcript:
+                    yield Static("[dim italic]No turns yet.[/]", classes="history-empty")
+                else:
+                    for i, turn in enumerate(self.transcript, 1):
+                        color = self.color_for(turn.speaker)
+                        body = Text()
+                        body.append(f"{i}. {turn.speaker}\n", style=f"bold {color}")
+                        body.append(turn.text)
+                        yield Static(body, classes="history-turn")
 
 
 class BoardRoomApp(App):
-    """Live boardroom discussion in a Textual TUI."""
+    """Live boardroom discussion in focus mode."""
 
     CSS_PATH = "boardroom.tcss"
     BINDINGS = [
         ("q", "quit", "Quit"),
-        ("s", "save_transcript", "Save transcript"),
+        ("h", "toggle_history", "History"),
+        ("s", "save_transcript", "Save"),
     ]
 
     def __init__(
@@ -133,36 +183,42 @@ class BoardRoomApp(App):
         self._buffer = ""
         self._transcript: list[Turn] = []
         self._in_verdict_round = False
+        self._round = 0
         self._client: AsyncAnthropic | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
-        with Horizontal(id="main"):
-            with Vertical(id="chat-column"):
-                yield RichLog(id="chat", markup=True, wrap=True, highlight=False)
-                yield Static("", id="current")
-            with Vertical(id="sidebar"):
-                yield AgentRoster(self.agents)
-                yield TallySummary()
+        yield Static("", id="sub-header")
+        with Center(id="stage"):
+            yield FocalCard()
+        yield StatusRow(self.agents)
         yield Footer()
 
     def on_mount(self) -> None:
         self.title = "BoardRoom"
-        idea_short = self.idea if len(self.idea) <= 80 else self.idea[:79] + "…"
-        self.sub_title = idea_short
+        self.sub_title = self.idea if len(self.idea) <= 80 else self.idea[:79] + "…"
+        self.query_one(FocalCard).show_idle()
+        self._set_phase_text()
         self._run_discussion()
 
     async def on_unmount(self) -> None:
         if self._client is not None:
             await self._client.close()
 
+    def _set_phase_text(self) -> None:
+        sub = self.query_one("#sub-header", Static)
+        if self._round == 0:
+            sub.update("[dim italic]Preparing discussion…[/]")
+        elif self._in_verdict_round:
+            sub.update("[dim]Final verdicts[/]")
+        else:
+            sub.update(f"[dim]Round {self._round} of {self.rounds}[/]")
+
     @work(exclusive=True, group="discussion")
     async def _run_discussion(self) -> None:
         self._client = AsyncAnthropic()
-        chat = self.query_one("#chat", RichLog)
-        current = self.query_one("#current", Static)
-        roster = self.query_one(AgentRoster)
-        tally = self.query_one(TallySummary)
+        focal = self.query_one(FocalCard)
+        status = self.query_one(StatusRow)
 
         async for event in run_boardroom(
             self._client,
@@ -173,79 +229,62 @@ class BoardRoomApp(App):
             self.max_tokens,
         ):
             if isinstance(event, RoundStart):
-                chat.write(f"[dim]── Round {event.n} of {event.total} ──[/]")
+                self._round = event.n
+                self._set_phase_text()
 
             elif isinstance(event, VerdictRoundStart):
                 self._in_verdict_round = True
-                chat.write("[dim]── Final verdicts ──[/]")
-                # Reset roster to pending for the verdict round
-                for agent in self.agents:
-                    roster.update_status(agent.role, "pending")
+                status.reset_for_verdicts()
+                self._set_phase_text()
 
             elif isinstance(event, TurnStart):
                 self._buffer = ""
                 color = self._color(event.role)
-                current.update(
-                    Text.assemble(
-                        (f"{event.role}: ", f"bold {color}"),
-                        ("…", "dim"),
-                    )
-                )
-                roster.update_status(event.role, "speaking")
+                focal.set_speaker(event.role, color)
+                status.update_agent(event.role, "speaking")
 
             elif isinstance(event, Token):
                 self._buffer += event.text
-                color = self._color(event.role)
-                current.update(
-                    Text.assemble(
-                        (f"{event.role}: ", f"bold {color}"),
-                        Text(self._buffer),
-                    )
-                )
+                focal.show_text(self._buffer)
 
             elif isinstance(event, TurnEnd):
-                color = self._color(event.role)
-                chat.write(
-                    Text.assemble(
-                        (f"{event.role}: ", f"bold {color}"),
-                        Text(event.full_text.strip()),
-                    )
+                focal.show_text(event.full_text.strip())
+                self._transcript.append(
+                    Turn(speaker=event.role, text=event.full_text.strip())
                 )
-                chat.write("")
-                current.update("")
-                self._transcript.append(Turn(speaker=event.role, text=event.full_text.strip()))
                 if not self._in_verdict_round:
-                    roster.update_status(event.role, "done")
+                    status.update_agent(event.role, "done")
 
             elif isinstance(event, Verdict):
-                status = {
+                key = {
                     "GOOD": "voted_good",
                     "BAD": "voted_bad",
                     "UNCLEAR": "voted_unclear",
                 }[event.verdict]
-                roster.update_status(event.role, status)
-                tally.add_vote(event.verdict)
+                status.update_agent(event.role, key)
+                status.add_vote(event.verdict)
 
             elif isinstance(event, TallyComplete):
-                tally.finalize(event.good, event.bad, event.overall)
-                styled = {
-                    "GOOD": "[bold green]GOOD[/]",
-                    "BAD": "[bold red]BAD[/]",
-                    "SPLIT": "[bold yellow]SPLIT[/]",
-                }[event.overall]
-                chat.write(
-                    f"[b]Final verdict:[/] {styled}  "
-                    f"[dim]({event.good} GOOD / {event.bad} BAD)[/]"
-                )
+                focal.show_verdict(event.overall, event.good, event.bad)
+                self.query_one("#sub-header", Static).update("[bold]Decision[/]")
 
             elif isinstance(event, Error):
-                self.notify(f"{event.role or 'engine'}: {event.message}", severity="error")
+                self.notify(
+                    f"{event.role or 'engine'}: {event.message}", severity="error"
+                )
 
     def _color(self, role: str) -> str:
         for a in self.agents:
             if a.role == role:
                 return a.color
         return "white"
+
+    def action_toggle_history(self) -> None:
+        # If a modal is already on top of the stack, dismiss it; otherwise push.
+        if len(self.screen_stack) > 1:
+            self.pop_screen()
+        else:
+            self.push_screen(HistoryScreen(list(self._transcript), self._color))
 
     def action_save_transcript(self) -> None:
         if not self._transcript:
