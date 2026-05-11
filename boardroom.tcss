@@ -1,0 +1,59 @@
+Screen {
+    background: $surface;
+}
+
+#main {
+    height: 1fr;
+    layout: horizontal;
+}
+
+#chat-column {
+    width: 1fr;
+    layout: vertical;
+}
+
+#chat {
+    height: 1fr;
+    padding: 1 2;
+    background: $surface;
+}
+
+#current {
+    height: auto;
+    min-height: 3;
+    max-height: 12;
+    padding: 1 2;
+    margin: 0 1 1 1;
+    border: round $accent;
+    background: $boost;
+}
+
+#sidebar {
+    width: 34;
+    layout: vertical;
+    border-left: solid $primary;
+    padding: 1 2;
+    background: $surface;
+}
+
+.section-title {
+    margin-bottom: 1;
+    color: $text;
+    text-style: bold;
+}
+
+.roster-row {
+    height: 1;
+    margin-bottom: 1;
+}
+
+#roster {
+    height: auto;
+    margin-bottom: 2;
+}
+
+#tally {
+    height: auto;
+    border: round $primary;
+    padding: 1 2;
+}
