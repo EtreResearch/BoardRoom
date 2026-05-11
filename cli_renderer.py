@@ -11,6 +11,7 @@ from typing import AsyncIterator
 
 from rich.console import Console
 from rich.rule import Rule
+from rich.text import Text
 
 from engine import (
     Agent,
@@ -43,7 +44,13 @@ async def render(
 
     async for event in events:
         if isinstance(event, RoundStart):
-            console.print(Rule(f"Round {event.n} of {event.total}", style="dim"))
+            order_text = " → ".join(event.order)
+            console.print(
+                Rule(
+                    Text(f"Round {event.n} of {event.total}  ·  {order_text}"),
+                    style="dim",
+                )
+            )
         elif isinstance(event, VerdictRoundStart):
             in_verdicts = True
             console.print(Rule("Final verdicts", style="dim"))

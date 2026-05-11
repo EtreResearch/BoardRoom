@@ -44,6 +44,22 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Launch the full-screen Textual UI instead of streaming to stdout.",
     )
+    parser.add_argument(
+        "--ordered",
+        action="store_true",
+        help="Speak in YAML order every round (default: shuffle each round).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed the per-round shuffle for reproducibility.",
+    )
+    parser.add_argument(
+        "--no-setup",
+        action="store_true",
+        help="Skip the TUI setup screen and use the flag values directly.",
+    )
     return parser.parse_args()
 
 
@@ -60,7 +76,16 @@ async def _run_stdout(args, agents, model, max_tokens) -> None:
 
     client = AsyncAnthropic()
     try:
-        events = run_boardroom(client, agents, args.idea, args.rounds, model, max_tokens)
+        events = run_boardroom(
+            client,
+            agents,
+            args.idea,
+            args.rounds,
+            model,
+            max_tokens,
+            ordered=args.ordered,
+            seed=args.seed,
+        )
         await render(events, console, agents)
     finally:
         await client.close()
@@ -75,6 +100,9 @@ def _run_tui(args, agents, model, max_tokens) -> None:
         rounds=args.rounds,
         model=model,
         max_tokens=max_tokens,
+        ordered=args.ordered,
+        seed=args.seed,
+        no_setup=args.no_setup,
     )
     app.run()
 
