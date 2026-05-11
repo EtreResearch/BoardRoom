@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import yaml
-from anthropic import APIError, AsyncAnthropic
 
+from providers import Provider
+
+DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 600
 DEFAULT_ROUNDS = 3
@@ -93,13 +95,27 @@ Event = (
 )
 
 
-def load_config(path: Path) -> tuple[list[Agent], str, int]:
+@dataclass
+class Defaults:
+    provider: str
+    model: str
+    max_tokens: int
+    base_url: str | None
+    api_key_env: str | None
+
+
+def load_config(path: Path) -> tuple[list[Agent], Defaults]:
     if not path.exists():
         sys.exit(f"Config file not found: {path}")
     data = yaml.safe_load(path.read_text())
-    defaults = data.get("defaults") or {}
-    model = defaults.get("model", DEFAULT_MODEL)
-    max_tokens = int(defaults.get("max_tokens", DEFAULT_MAX_TOKENS))
+    raw_defaults = data.get("defaults") or {}
+    defaults = Defaults(
+        provider=raw_defaults.get("provider", DEFAULT_PROVIDER),
+        model=raw_defaults.get("model", DEFAULT_MODEL),
+        max_tokens=int(raw_defaults.get("max_tokens", DEFAULT_MAX_TOKENS)),
+        base_url=raw_defaults.get("base_url"),
+        api_key_env=raw_defaults.get("api_key_env"),
+    )
     raw_agents = data.get("agents") or []
     if not raw_agents:
         sys.exit("agents.yaml must define at least one agent under `agents:`")
@@ -107,7 +123,7 @@ def load_config(path: Path) -> tuple[list[Agent], str, int]:
         Agent(role=a["role"], color=a.get("color", "white"), system=a["system"].strip())
         for a in raw_agents
     ]
-    return agents, model, max_tokens
+    return agents, defaults
 
 
 def format_transcript(idea: str, transcript: list[Turn], next_role: str) -> str:
@@ -144,7 +160,7 @@ def overall_verdict(good: int, bad: int) -> str:
 
 
 async def _stream_one(
-    client: AsyncAnthropic,
+    provider: Provider,
     agent: Agent,
     user_text: str,
     model: str,
@@ -153,30 +169,23 @@ async def _stream_one(
     yield TurnStart(agent.role)
     chunks: list[str] = []
     try:
-        async with client.messages.stream(
+        async for chunk in provider.stream(
+            system=agent.system,
+            user_message=user_text,
             model=model,
             max_tokens=max_tokens,
-            system=[
-                {
-                    "type": "text",
-                    "text": agent.system,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": user_text}],
-        ) as stream:
-            async for chunk in stream.text_stream:
-                chunks.append(chunk)
-                yield Token(agent.role, chunk)
-    except APIError as e:
-        yield Error(agent.role, f"API error: {e}")
+        ):
+            chunks.append(chunk)
+            yield Token(agent.role, chunk)
+    except Exception as e:
+        yield Error(agent.role, f"{type(e).__name__}: {e}")
         yield TurnEnd(agent.role, "".join(chunks))
         return
     yield TurnEnd(agent.role, "".join(chunks))
 
 
 async def run_boardroom(
-    client: AsyncAnthropic,
+    provider: Provider,
     agents: list[Agent],
     idea: str,
     rounds: int,
@@ -190,7 +199,7 @@ async def run_boardroom(
         for agent in agents:
             user_text = format_transcript(idea, transcript, agent.role)
             full_text = ""
-            async for event in _stream_one(client, agent, user_text, model, max_tokens):
+            async for event in _stream_one(provider, agent, user_text, model, max_tokens):
                 if isinstance(event, TurnEnd):
                     full_text = event.full_text
                 yield event
@@ -202,7 +211,7 @@ async def run_boardroom(
     for agent in agents:
         user_text = format_verdict_prompt(idea, transcript, agent.role)
         full_text = ""
-        async for event in _stream_one(client, agent, user_text, model, max_tokens):
+        async for event in _stream_one(provider, agent, user_text, model, max_tokens):
             if isinstance(event, TurnEnd):
                 full_text = event.full_text
             yield event
