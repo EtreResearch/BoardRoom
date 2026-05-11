@@ -1,0 +1,89 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+```bash
+# Install
+pip install -r requirements.txt
+
+# Configure: copy .env.example to .env and set ANTHROPIC_API_KEY
+
+# Stdout mode (streams colored turns to the terminal)
+python boardroom.py "<business idea>"
+
+# Full-screen Textual UI
+python boardroom.py --tui "<business idea>"
+
+# Common overrides
+python boardroom.py --rounds 1 "<idea>"
+python boardroom.py --model claude-haiku-4-5-20251001 "<idea>"
+python boardroom.py --config path/to/agents.yaml "<idea>"
+```
+
+There is no test suite or linter configured. For sanity-checking Python files
+after edits, use `python -c "import ast; ast.parse(open('FILE').read())"`.
+Validate the TUI by running it; type-checkers won't catch Textual layout bugs.
+
+## Architecture
+
+The codebase is small (~5 Python files) but its shape matters. It separates
+the LLM-driven discussion logic from how that logic is shown to the user:
+
+**Engine (`engine.py`)** — `run_boardroom(client, agents, idea, rounds, model, max_tokens)`
+is an async generator yielding typed event dataclasses: `RoundStart`,
+`TurnStart`, `Token`, `TurnEnd`, `VerdictRoundStart`, `Verdict`,
+`TallyComplete`, `Error`. The engine owns the running `transcript` and builds
+each turn's user message via `format_transcript` / `format_verdict_prompt`.
+The only place the Anthropic SDK is called is `_stream_one`, which uses
+`async with client.messages.stream(...)` and attaches `cache_control: ephemeral`
+to each agent's system prompt so personas are cached across turns.
+`load_config` returns `(agents, model, max_tokens)`.
+
+**Renderers** — Two independent consumers of the event stream; neither calls
+engine logic directly, only iterates events:
+
+- `cli_renderer.py` — `async def render(events, console, agents)`. Emits round
+  rules, colored `[ROLE]:` headers, inline streamed tokens, and the final
+  tally table.
+- `tui.py` — Textual `BoardRoomApp`. Layout: a `RichLog` chat column shows
+  finalized turns; a `Static#current` panel pinned below it streams the
+  in-flight turn token-by-token (the log can't update partial lines); a
+  right sidebar contains `AgentRoster` (status per agent: pending / speaking /
+  done / voted GOOD / voted BAD) and `TallySummary`. A background worker
+  (`@work(exclusive=True, group="discussion")`) iterates `run_boardroom` and
+  dispatches events to widget updates. Styles live in `boardroom.tcss`.
+
+`boardroom.py` is the dispatcher: argparse, env-var validation, calls
+`engine.load_config`, then runs either `_run_stdout` (which instantiates
+`AsyncAnthropic` and awaits `cli_renderer.render`, via `asyncio.run`) or
+`BoardRoomApp(...).run()` (the TUI's `_run_discussion` worker instantiates
+its own `AsyncAnthropic`). The Anthropic client is never constructed in
+the dispatcher itself.
+
+## Conventions to preserve
+
+- **Adding a new event type**: add the dataclass in `engine.py`, append it to
+  the `Event` union, and handle it in **both** renderers (`cli_renderer.py`
+  and `tui.py`'s `_run_discussion`). Forgetting one renderer is the most
+  common refactor bug.
+- **Streaming partial output in the TUI** goes through the `Static#current`
+  widget — `RichLog.write` is for fully-formed lines only. Don't write partial
+  tokens to the log directly.
+- **Prompt caching** (`cache_control: ephemeral`) lives inside
+  `engine._stream_one`. If you add other models / providers later, that's
+  the only place the Anthropic-specific cache block needs to be branched.
+- **Model IDs in use**: `claude-opus-4-7`, `claude-sonnet-4-6`,
+  `claude-haiku-4-5-20251001`. Default is `claude-sonnet-4-6` in
+  `engine.DEFAULT_MODEL`.
+- **Textual is pinned to `0.75.1`** in `requirements.txt`. Don't bump without
+  verifying the `@work(group=...)` kwarg and `RichLog` API still hold.
+- **Personas** are loaded from `agents.yaml` `agents:` list (`role`, `color`,
+  `system`). Any number is supported; the engine treats them as a round-robin.
+
+## Branch & PR convention
+
+The repo uses long-lived `claude/<topic>` feature branches. Active dev work
+happens on a branch, then PRs land on `main`. When starting new work, branch
+off the most recent `claude/<topic>` branch in flight (or `main` if none is).
