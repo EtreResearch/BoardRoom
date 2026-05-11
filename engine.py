@@ -20,6 +20,14 @@ DEFAULT_MAX_TOKENS = 600
 DEFAULT_ROUNDS = 3
 VERDICT_RE = re.compile(r"VERDICT:\s*(GOOD|BAD)", re.IGNORECASE)
 
+# Anthropic per-million-token pricing in USD. Override by editing this dict
+# or extending it for new model IDs.
+MODEL_PRICING: dict[str, dict[str, float]] = {
+    "claude-opus-4-7":          {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.50},
+    "claude-sonnet-4-6":        {"input":  3.0, "output": 15.0, "cache_write":  3.75, "cache_read": 0.30},
+    "claude-haiku-4-5-20251001":{"input":  1.0, "output":  5.0, "cache_write":  1.25, "cache_read": 0.10},
+}
+
 
 @dataclass
 class Agent:
@@ -78,6 +86,16 @@ class TallyComplete:
 
 
 @dataclass
+class UsageReport:
+    role: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_creation_input_tokens: int
+    cache_read_input_tokens: int
+
+
+@dataclass
 class Error:
     role: str | None
     message: str
@@ -91,8 +109,22 @@ Event = (
     | VerdictRoundStart
     | Verdict
     | TallyComplete
+    | UsageReport
     | Error
 )
+
+
+def compute_cost(usage: UsageReport) -> float:
+    """Return estimated USD cost for a single turn. 0.0 if model is unknown."""
+    rates = MODEL_PRICING.get(usage.model)
+    if not rates:
+        return 0.0
+    return (
+        usage.input_tokens                 * rates["input"]
+        + usage.output_tokens              * rates["output"]
+        + usage.cache_creation_input_tokens * rates["cache_write"]
+        + usage.cache_read_input_tokens    * rates["cache_read"]
+    ) / 1_000_000
 
 
 def load_config(path: Path) -> tuple[list[Agent], str, int]:
@@ -154,6 +186,7 @@ async def _stream_one(
 ) -> AsyncIterator[Event]:
     yield TurnStart(agent.role)
     chunks: list[str] = []
+    final_message = None
     try:
         async with client.messages.stream(
             model=model,
@@ -170,11 +203,22 @@ async def _stream_one(
             async for chunk in stream.text_stream:
                 chunks.append(chunk)
                 yield Token(agent.role, chunk)
+            final_message = await stream.get_final_message()
     except APIError as e:
         yield Error(agent.role, f"API error: {e}")
         yield TurnEnd(agent.role, "".join(chunks))
         return
     yield TurnEnd(agent.role, "".join(chunks))
+    if final_message is not None and getattr(final_message, "usage", None) is not None:
+        u = final_message.usage
+        yield UsageReport(
+            role=agent.role,
+            model=model,
+            input_tokens=getattr(u, "input_tokens", 0) or 0,
+            output_tokens=getattr(u, "output_tokens", 0) or 0,
+            cache_creation_input_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
+            cache_read_input_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+        )
 
 
 async def run_boardroom(
