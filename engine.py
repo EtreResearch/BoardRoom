@@ -5,6 +5,7 @@ Yields a stream of events that any renderer (stdout, TUI) can consume.
 
 from __future__ import annotations
 
+import random
 import re
 import sys
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ class Turn:
 class RoundStart:
     n: int
     total: int
+    order: list[str]
 
 
 @dataclass
@@ -182,12 +184,16 @@ async def run_boardroom(
     rounds: int,
     model: str,
     max_tokens: int,
+    ordered: bool = False,
+    seed: int | None = None,
 ) -> AsyncIterator[Event]:
+    rng = random.Random(seed) if seed is not None else random
     transcript: list[Turn] = []
 
     for n in range(1, rounds + 1):
-        yield RoundStart(n, rounds)
-        for agent in agents:
+        speaking_order = list(agents) if ordered else rng.sample(agents, len(agents))
+        yield RoundStart(n=n, total=rounds, order=[a.role for a in speaking_order])
+        for agent in speaking_order:
             user_text = format_transcript(idea, transcript, agent.role)
             full_text = ""
             async for event in _stream_one(client, agent, user_text, model, max_tokens):

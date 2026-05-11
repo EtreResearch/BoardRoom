@@ -57,3 +57,49 @@ Screen {
     border: round $primary;
     padding: 1 2;
 }
+
+SetupScreen {
+    align: center middle;
+    background: rgba(0, 0, 0, 0.6);
+}
+
+#setup-container {
+    width: 60;
+    height: auto;
+    max-height: 16;
+    padding: 2 4;
+    background: $surface;
+    border: thick $primary;
+    layout: vertical;
+}
+
+#setup-title {
+    height: 1;
+    content-align: center middle;
+    color: $text;
+    margin-bottom: 1;
+}
+
+#setup-question {
+    height: 1;
+    content-align: center middle;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#setup-options {
+    height: auto;
+    align: center middle;
+    margin-bottom: 1;
+}
+
+#setup-options Button {
+    margin: 0 1;
+    min-width: 14;
+}
+
+#setup-help {
+    height: 1;
+    content-align: center middle;
+    color: $text-muted;
+}

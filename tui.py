@@ -13,8 +13,9 @@ from anthropic import AsyncAnthropic
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Header, RichLog, Static
+from textual.containers import Container, Horizontal, Vertical
+from textual.screen import ModalScreen
+from textual.widgets import Button, Footer, Header, RichLog, Static
 
 from engine import (
     Agent,
@@ -107,6 +108,53 @@ class TallySummary(Static):
         return f"[b]Tally[/]\n\n{body}\n\nVerdict: {styled}"
 
 
+class SetupScreen(ModalScreen[bool]):
+    """One-question setup picker shown before the discussion starts."""
+
+    BINDINGS = [
+        ("q", "app.quit", "Quit"),
+        ("s", "pick_shuffled", "Shuffled"),
+        ("t", "pick_structured", "Structured"),
+    ]
+
+    def __init__(self, default_ordered: bool) -> None:
+        super().__init__()
+        self.default_ordered = default_ordered
+
+    def compose(self) -> ComposeResult:
+        with Container(id="setup-container"):
+            yield Static("[b]Setup[/]", id="setup-title")
+            yield Static("How should the executives take turns?", id="setup-question")
+            with Horizontal(id="setup-options"):
+                yield Button(
+                    "Shuffled",
+                    id="opt-shuffled",
+                    variant="primary" if not self.default_ordered else "default",
+                )
+                yield Button(
+                    "Structured",
+                    id="opt-structured",
+                    variant="primary" if self.default_ordered else "default",
+                )
+            yield Static(
+                "[dim]Tab / ← → toggle · Enter accept · q quit[/]",
+                id="setup-help",
+            )
+
+    def on_mount(self) -> None:
+        focus_id = "opt-structured" if self.default_ordered else "opt-shuffled"
+        self.query_one(f"#{focus_id}", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "opt-structured")
+
+    def action_pick_shuffled(self) -> None:
+        self.dismiss(False)
+
+    def action_pick_structured(self) -> None:
+        self.dismiss(True)
+
+
 class BoardRoomApp(App):
     """Live boardroom discussion in a Textual TUI."""
 
@@ -123,6 +171,9 @@ class BoardRoomApp(App):
         rounds: int,
         model: str,
         max_tokens: int,
+        ordered: bool = False,
+        seed: int | None = None,
+        no_setup: bool = False,
     ) -> None:
         super().__init__()
         self.idea = idea
@@ -130,6 +181,9 @@ class BoardRoomApp(App):
         self.rounds = rounds
         self.model = model
         self.max_tokens = max_tokens
+        self.ordered = ordered
+        self.seed = seed
+        self.no_setup = no_setup
         self._buffer = ""
         self._transcript: list[Turn] = []
         self._in_verdict_round = False
@@ -150,6 +204,14 @@ class BoardRoomApp(App):
         self.title = "BoardRoom"
         idea_short = self.idea if len(self.idea) <= 80 else self.idea[:79] + "…"
         self.sub_title = idea_short
+        if self.no_setup:
+            self._run_discussion()
+        else:
+            self.push_screen(SetupScreen(self.ordered), self._on_setup_done)
+
+    def _on_setup_done(self, ordered: bool | None) -> None:
+        if ordered is not None:
+            self.ordered = ordered
         self._run_discussion()
 
     async def on_unmount(self) -> None:
@@ -171,9 +233,15 @@ class BoardRoomApp(App):
             self.rounds,
             self.model,
             self.max_tokens,
+            ordered=self.ordered,
+            seed=self.seed,
         ):
             if isinstance(event, RoundStart):
-                chat.write(f"[dim]── Round {event.n} of {event.total} ──[/]")
+                order_text = " → ".join(event.order)
+                chat.write(
+                    f"[dim]── Round {event.n} of {event.total}  ·  "
+                    f"{order_text} ──[/]"
+                )
 
             elif isinstance(event, VerdictRoundStart):
                 self._in_verdict_round = True
