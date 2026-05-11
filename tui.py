@@ -12,7 +12,6 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from anthropic import AsyncAnthropic
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -33,6 +32,7 @@ from engine import (
     VerdictRoundStart,
     run_boardroom,
 )
+from providers import Provider
 
 
 def _slug(role: str) -> str:
@@ -173,6 +173,7 @@ class BoardRoomApp(App):
         rounds: int,
         model: str,
         max_tokens: int,
+        provider: Provider,
     ) -> None:
         super().__init__()
         self.idea = idea
@@ -180,11 +181,11 @@ class BoardRoomApp(App):
         self.rounds = rounds
         self.model = model
         self.max_tokens = max_tokens
+        self.provider = provider
         self._buffer = ""
         self._transcript: list[Turn] = []
         self._in_verdict_round = False
         self._round = 0
-        self._client: AsyncAnthropic | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -202,8 +203,7 @@ class BoardRoomApp(App):
         self._run_discussion()
 
     async def on_unmount(self) -> None:
-        if self._client is not None:
-            await self._client.close()
+        await self.provider.close()
 
     def _set_phase_text(self) -> None:
         sub = self.query_one("#sub-header", Static)
@@ -216,12 +216,11 @@ class BoardRoomApp(App):
 
     @work(exclusive=True)
     async def _run_discussion(self) -> None:
-        self._client = AsyncAnthropic()
         focal = self.query_one(FocalCard)
         status = self.query_one(StatusRow)
 
         async for event in run_boardroom(
-            self._client,
+            self.provider,
             self.agents,
             self.idea,
             self.rounds,

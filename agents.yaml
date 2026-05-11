@@ -1,6 +1,13 @@
+# Provider/model defaults. Easiest way to set these is `python boardroom.py init`.
+# Supported providers: anthropic, ollama, lmstudio, vllm, localai, openai,
+#                      openrouter, groq, together, custom.
+# Local providers (ollama / lmstudio / ...) are free and need no API key.
 defaults:
+  provider: anthropic
   model: claude-sonnet-4-6
   max_tokens: 600
+  # base_url: http://localhost:11434/v1   # only used with openai-compatible providers
+  # api_key_env: OPENAI_API_KEY           # name of env var holding the API key
 
 agents:
   - role: CEO
