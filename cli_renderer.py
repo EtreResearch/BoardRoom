@@ -22,8 +22,10 @@ from engine import (
     Token,
     TurnEnd,
     TurnStart,
+    UsageReport,
     Verdict,
     VerdictRoundStart,
+    compute_cost,
 )
 
 
@@ -41,6 +43,11 @@ async def render(
 ) -> None:
     in_verdicts = False
     verdicts: dict[str, str] = {}
+    total_input = 0
+    total_output = 0
+    total_cache_write = 0
+    total_cache_read = 0
+    total_cost = 0.0
 
     async for event in events:
         if isinstance(event, RoundStart):
@@ -63,6 +70,12 @@ async def render(
             print("\n")
         elif isinstance(event, Verdict):
             verdicts[event.role] = event.verdict
+        elif isinstance(event, UsageReport):
+            total_input += event.input_tokens
+            total_output += event.output_tokens
+            total_cache_write += event.cache_creation_input_tokens
+            total_cache_read += event.cache_read_input_tokens
+            total_cost += compute_cost(event)
         elif isinstance(event, TallyComplete):
             console.print(Rule("Tally", style="dim"))
             for role, v in verdicts.items():
@@ -82,6 +95,18 @@ async def render(
             console.print(
                 f"\n  Tally: {event.good} GOOD / {event.bad} BAD  →  Verdict: {overall_styled}"
             )
+            if total_input or total_output or total_cache_read or total_cache_write:
+                total_in_all = total_input + total_cache_write + total_cache_read
+                cache_note = ""
+                if total_cache_read or total_cache_write:
+                    cache_note = (
+                        f"  [dim](cache: {total_cache_write:,} w · "
+                        f"{total_cache_read:,} r)[/]"
+                    )
+                console.print(
+                    f"\n  Usage: {total_in_all:,} in · {total_output:,} out"
+                    f"  [dim]~${total_cost:.4f}[/]{cache_note}"
+                )
         elif isinstance(event, Error):
             print()
             sys.exit(f"Anthropic API error while {event.role} was speaking: {event.message}")

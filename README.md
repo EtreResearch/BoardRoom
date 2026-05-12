@@ -47,7 +47,9 @@ A polished interface opens in your terminal:
   into a panel pinned at the bottom. Each round header shows the speaking
   order picked for that round.
 - **Sidebar** (right) — each agent's live status (`pending` → `speaking…` →
-  `done` / `voted GOOD|BAD`) and a running tally.
+  `done` / `voted GOOD|BAD`), a running tally, and a **Usage** panel that
+  shows cumulative input/output/cache tokens and an estimated dollar cost,
+  updating after every turn.
 - **Footer** — key bindings.
 
 Key bindings:
@@ -73,4 +75,8 @@ a one-line `VERDICT: GOOD | BAD` plus reasoning; the script tallies and
 prints the majority verdict.
 
 Each agent's persona is sent with `cache_control: ephemeral` so it's cached
-across turns, keeping cost down.
+across turns, keeping cost down. Per-turn token usage from the Anthropic API
+is surfaced to the UI: the TUI's sidebar updates after every turn, and
+stdout mode prints a one-line `Usage:` summary at the end. Cost estimates
+use a hardcoded price table in `engine.MODEL_PRICING` — edit that dict if
+Anthropic's published pricing changes.

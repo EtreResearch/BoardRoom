@@ -58,6 +58,13 @@ Screen {
     padding: 1 2;
 }
 
+#token-usage {
+    height: auto;
+    border: round $boost;
+    padding: 1 2;
+    margin-top: 1;
+}
+
 SetupScreen {
     align: center middle;
     background: rgba(0, 0, 0, 0.6);

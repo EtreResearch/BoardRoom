@@ -26,8 +26,10 @@ from engine import (
     Turn,
     TurnEnd,
     TurnStart,
+    UsageReport,
     Verdict,
     VerdictRoundStart,
+    compute_cost,
     run_boardroom,
 )
 
@@ -106,6 +108,57 @@ class TallySummary(Static):
             "SPLIT": "[bold yellow]SPLIT[/]",
         }[self.overall]
         return f"[b]Tally[/]\n\n{body}\n\nVerdict: {styled}"
+
+
+class TokenUsage(Static):
+    """Sidebar widget showing live token usage and estimated cost."""
+
+    def __init__(self) -> None:
+        super().__init__("", id="token-usage")
+        self.total_input = 0
+        self.total_output = 0
+        self.total_cache_write = 0
+        self.total_cache_read = 0
+        self.total_cost = 0.0
+        self.last_role: str | None = None
+        self.last_input = 0
+        self.last_output = 0
+        self.update(self._render())
+
+    def add_usage(self, event: UsageReport) -> None:
+        self.total_input += event.input_tokens
+        self.total_output += event.output_tokens
+        self.total_cache_write += event.cache_creation_input_tokens
+        self.total_cache_read += event.cache_read_input_tokens
+        self.total_cost += compute_cost(event)
+        self.last_role = event.role
+        # "Input" shown to the user includes uncached + cache write + cache read,
+        # since they all count as bytes the model saw.
+        self.last_input = (
+            event.input_tokens
+            + event.cache_creation_input_tokens
+            + event.cache_read_input_tokens
+        )
+        self.last_output = event.output_tokens
+        self.update(self._render())
+
+    def _render(self) -> str:
+        if self.last_role is None:
+            return "[b]Usage[/]\n\n[dim]—[/]"
+        total_input = self.total_input + self.total_cache_write + self.total_cache_read
+        body = (
+            f"[b]Usage[/]  [dim]~${self.total_cost:.4f}[/]\n\n"
+            f"[dim]Last ({self.last_role}):[/] "
+            f"{self.last_input:,} in · {self.last_output:,} out\n"
+            f"[dim]Session:[/] "
+            f"{total_input:,} in · {self.total_output:,} out"
+        )
+        if self.total_cache_read or self.total_cache_write:
+            body += (
+                f"\n[dim]Cache:[/] "
+                f"{self.total_cache_write:,} w · {self.total_cache_read:,} r"
+            )
+        return body
 
 
 class SetupScreen(ModalScreen[bool]):
@@ -198,6 +251,7 @@ class BoardRoomApp(App):
             with Vertical(id="sidebar"):
                 yield AgentRoster(self.agents)
                 yield TallySummary()
+                yield TokenUsage()
         yield Footer()
 
     def on_mount(self) -> None:
@@ -225,6 +279,7 @@ class BoardRoomApp(App):
         current = self.query_one("#current", Static)
         roster = self.query_one(AgentRoster)
         tally = self.query_one(TallySummary)
+        usage_widget = self.query_one(TokenUsage)
 
         async for event in run_boardroom(
             self._client,
@@ -308,6 +363,9 @@ class BoardRoomApp(App):
                     f"[b]Final verdict:[/] {styled}  "
                     f"[dim]({event.good} GOOD / {event.bad} BAD)[/]"
                 )
+
+            elif isinstance(event, UsageReport):
+                usage_widget.add_usage(event)
 
             elif isinstance(event, Error):
                 self.notify(f"{event.role or 'engine'}: {event.message}", severity="error")
