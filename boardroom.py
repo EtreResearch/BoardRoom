@@ -16,6 +16,20 @@ from rich.rule import Rule
 
 from engine import DEFAULT_ROUNDS, load_config, run_boardroom
 
+HIGH_ROUNDS_WARN_THRESHOLD = 10
+
+
+def _positive_int(value: str) -> int:
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}")
+    if n < 1:
+        raise argparse.ArgumentTypeError(
+            f"must be at least 1 (got {n}); zero or negative rounds would skip the discussion entirely"
+        )
+    return n
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -24,9 +38,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("idea", help="The business idea to evaluate (quote it).")
     parser.add_argument(
         "--rounds",
-        type=int,
+        type=_positive_int,
         default=DEFAULT_ROUNDS,
-        help=f"Discussion rounds before verdict (default {DEFAULT_ROUNDS}).",
+        help=f"Discussion rounds before verdict (default {DEFAULT_ROUNDS}, minimum 1).",
     )
     parser.add_argument(
         "--config",
@@ -117,6 +131,15 @@ def main() -> None:
     agents, model, max_tokens = load_config(args.config)
     if args.model:
         model = args.model
+
+    if args.rounds > HIGH_ROUNDS_WARN_THRESHOLD:
+        total_calls = (args.rounds + 1) * len(agents)
+        print(
+            f"Warning: --rounds {args.rounds} × {len(agents)} agents = "
+            f"~{total_calls} API calls (incl. verdict round). "
+            f"This may be expensive on paid providers. Ctrl+C to cancel.",
+            file=sys.stderr,
+        )
 
     if args.tui:
         _run_tui(args, agents, model, max_tokens)
