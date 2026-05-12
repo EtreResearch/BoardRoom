@@ -132,7 +132,10 @@ def main() -> None:
     if args.model:
         model = args.model
 
-    if args.rounds > HIGH_ROUNDS_WARN_THRESHOLD:
+    if args.rounds > HIGH_ROUNDS_WARN_THRESHOLD and not args.tui:
+        # Skipped in TUI mode: Textual switches to the alternate screen on
+        # app.run(), which would hide a stderr message until after the run
+        # ends. The TUI's live cost panel covers that case.
         total_calls = (args.rounds + 1) * len(agents)
         print(
             f"Warning: --rounds {args.rounds} × {len(agents)} agents = "
