@@ -160,7 +160,7 @@ def format_transcript(
     if directive:
         lines += [
             "",
-            f"USER DIRECTIVE: {directive} Address this directly in your response.",
+            f"USER DIRECTIVE: {directive}. Address this directly in your response.",
         ]
     lines += ["", f"It is your turn. Respond as the {next_role}."]
     return "\n".join(lines)
