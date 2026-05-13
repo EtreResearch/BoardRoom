@@ -246,7 +246,6 @@ class BoardRoomApp(App):
         self._rounds_data: list[dict] = []          # [{n, speaking_order, turns: [...]}]
         self._verdicts: list[dict] = []             # [{role, verdict, reasoning}]
         self._tally: dict | None = None              # {good, bad, overall}
-        self._verdict_texts: dict[str, str] = {}    # role -> full verdict response text
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -350,11 +349,7 @@ class BoardRoomApp(App):
                 chat.write("")
                 current.update("")
                 self._transcript.append(Turn(speaker=event.role, text=text))
-                if self._in_verdict_round:
-                    # Save the raw verdict text so we can pair it with the
-                    # parsed GOOD/BAD enum when the Verdict event arrives.
-                    self._verdict_texts[event.role] = text
-                else:
+                if not self._in_verdict_round:
                     if self._rounds_data:
                         self._rounds_data[-1]["turns"].append(
                             {"speaker": event.role, "text": text}
@@ -373,7 +368,7 @@ class BoardRoomApp(App):
                     {
                         "role": event.role,
                         "verdict": event.verdict,
-                        "reasoning": self._verdict_texts.get(event.role, ""),
+                        "reasoning": event.text,
                     }
                 )
 
@@ -478,9 +473,17 @@ class BoardRoomApp(App):
             )
 
         if usage.last_role is not None:
+            # Match the TUI sidebar: "Input" is the full count the model saw
+            # (uncached + cache write + cache read). The "Cache" line below
+            # breaks down which slice of that came from the cache.
+            total_input = (
+                usage.total_input
+                + usage.total_cache_write
+                + usage.total_cache_read
+            )
             body.append(
                 "\n## Usage\n\n"
-                f"- Input: {usage.total_input:,} tokens\n"
+                f"- Input: {total_input:,} tokens (incl. cache)\n"
                 f"- Output: {usage.total_output:,} tokens\n"
                 f"- Cache write: {usage.total_cache_write:,} · "
                 f"Cache read: {usage.total_cache_read:,}\n"
