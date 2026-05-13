@@ -58,9 +58,13 @@ async def render(
                     style="dim",
                 )
             )
+            if event.directive:
+                console.print(Text(f"  User directive: {event.directive}", style="italic dim"))
         elif isinstance(event, VerdictRoundStart):
             in_verdicts = True
             console.print(Rule("Final verdicts", style="dim"))
+            if event.directive:
+                console.print(Text(f"  User directive: {event.directive}", style="italic dim"))
         elif isinstance(event, TurnStart):
             color = _color_for(event.role, agents)
             console.print(f"[bold {color}][{event.role}][/]:", end=" ")

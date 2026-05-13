@@ -81,6 +81,13 @@ the dispatcher itself.
   verifying the `@work(group=...)` kwarg and `RichLog` API still hold.
 - **Personas** are loaded from `agents.yaml` `agents:` list (`role`, `color`,
   `system`). Any number is supported; the engine treats them as a round-robin.
+- **User directives** (`RoundStart.directive`, `VerdictRoundStart.directive`)
+  are fed in via the optional `consume_directive` callable passed to
+  `run_boardroom`. Convention: the engine calls it once per phase boundary
+  (each round start + once before the verdict round). The text is embedded
+  in the user message by `format_transcript` / `format_verdict_prompt` right
+  before the "It is your turn" instruction. The TUI is the only place that
+  currently wires this in (via the `i` keybinding); stdout mode passes None.
 
 ## Branch & PR convention
 

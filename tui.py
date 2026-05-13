@@ -16,7 +16,7 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, RichLog, Static
+from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 
 from engine import (
     Agent,
@@ -209,6 +209,37 @@ class SetupScreen(ModalScreen[bool]):
         self.dismiss(True)
 
 
+class InterjectScreen(ModalScreen[str | None]):
+    """Modal for capturing a one-shot user directive for the next round."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def compose(self) -> ComposeResult:
+        with Container(id="interject-container"):
+            yield Static("[b]Steer the discussion[/]", id="interject-title")
+            yield Static(
+                "Your directive is attached to every agent's prompt in the "
+                "next round (or the verdict round if this is the last one). "
+                "The current round keeps streaming uninterrupted.",
+                id="interject-help",
+            )
+            yield Input(
+                placeholder="e.g. focus on privacy concerns",
+                id="interject-input",
+            )
+            yield Static("[dim]Enter to submit · Esc to cancel[/]", id="interject-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#interject-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        text = event.value.strip()
+        self.dismiss(text or None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class BoardRoomApp(App):
     """Live boardroom discussion in a Textual TUI."""
 
@@ -216,6 +247,7 @@ class BoardRoomApp(App):
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("s", "save_transcript", "Save transcript"),
+        ("i", "interject", "Interject"),
     ]
 
     def __init__(
@@ -243,9 +275,13 @@ class BoardRoomApp(App):
         self._in_verdict_round = False
         self._client: AsyncAnthropic | None = None
         # Session metadata captured for the saved transcript.
-        self._rounds_data: list[dict] = []          # [{n, speaking_order, turns: [...]}]
+        self._rounds_data: list[dict] = []          # [{n, speaking_order, directive, turns: [...]}]
         self._verdicts: list[dict] = []             # [{role, verdict, reasoning}]
         self._tally: dict | None = None              # {good, bad, overall}
+        self._verdict_directive: str | None = None   # directive applied to the verdict round
+        # Interjection state.
+        self._pending_directive: str | None = None
+        self._past_discussion: bool = False         # True once VerdictRoundStart fires
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -295,10 +331,16 @@ class BoardRoomApp(App):
             self.max_tokens,
             ordered=self.ordered,
             seed=self.seed,
+            consume_directive=self._consume_directive,
         ):
             if isinstance(event, RoundStart):
                 self._rounds_data.append(
-                    {"n": event.n, "speaking_order": list(event.order), "turns": []}
+                    {
+                        "n": event.n,
+                        "speaking_order": list(event.order),
+                        "directive": event.directive,
+                        "turns": [],
+                    }
                 )
                 order_text = " → ".join(event.order)
                 chat.write(
@@ -308,10 +350,26 @@ class BoardRoomApp(App):
                         style="dim",
                     )
                 )
+                if event.directive:
+                    chat.write(
+                        Text(
+                            f"  User directive: {event.directive}",
+                            style="italic dim",
+                        )
+                    )
 
             elif isinstance(event, VerdictRoundStart):
                 self._in_verdict_round = True
+                self._past_discussion = True
+                self._verdict_directive = event.directive
                 chat.write("[dim]── Final verdicts ──[/]")
+                if event.directive:
+                    chat.write(
+                        Text(
+                            f"  User directive: {event.directive}",
+                            style="italic dim",
+                        )
+                    )
                 # Reset roster to pending for the verdict round
                 for agent in self.agents:
                     roster.update_status(agent.role, "pending")
@@ -421,6 +479,7 @@ class BoardRoomApp(App):
                 for a in self.agents
             ],
             "rounds": self._rounds_data,
+            "verdict_directive": self._verdict_directive,
             "verdicts": self._verdicts,
             "tally": self._tally,
             "usage": {
@@ -455,11 +514,15 @@ class BoardRoomApp(App):
             body.append(f"\n## Round {r['n']} of {self.rounds}\n")
             order_text = " → ".join(r["speaking_order"])
             body.append(f"_Speaking order: {order_text}_\n")
+            if r.get("directive"):
+                body.append(f"_User directive: {r['directive']}_\n")
             for t in r["turns"]:
                 body.append(f"\n### {t['speaker']}\n\n{t['text']}\n")
 
         if self._verdicts:
             body.append("\n## Verdicts\n")
+            if self._verdict_directive:
+                body.append(f"_User directive: {self._verdict_directive}_\n")
             for v in self._verdicts:
                 body.append(
                     f"- **{v['role']}** — **{v['verdict']}** — "
@@ -500,3 +563,24 @@ class BoardRoomApp(App):
         path = Path(f"transcript-{ts}.md")
         path.write_text(self._build_transcript_document())
         self.notify(f"Saved {path.name}")
+
+    def action_interject(self) -> None:
+        if self._past_discussion:
+            self.notify(
+                "Discussion is past the discussion rounds; directive ignored."
+            )
+            return
+        self.push_screen(InterjectScreen(), self._on_interject_done)
+
+    def _on_interject_done(self, text: str | None) -> None:
+        if text is None:
+            return
+        replacing = self._pending_directive is not None
+        self._pending_directive = text
+        preview = text if len(text) <= 60 else text[:60] + "…"
+        msg = "Directive replaced" if replacing else "Directive queued"
+        self.notify(f'{msg}: "{preview}"')
+
+    def _consume_directive(self) -> str | None:
+        d, self._pending_directive = self._pending_directive, None
+        return d
