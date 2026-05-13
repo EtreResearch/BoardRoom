@@ -110,3 +110,41 @@ SetupScreen {
     content-align: center middle;
     color: $text-muted;
 }
+
+InterjectScreen {
+    align: center middle;
+    background: rgba(0, 0, 0, 0.6);
+}
+
+#interject-container {
+    width: 70;
+    height: auto;
+    padding: 2 4;
+    background: $surface;
+    border: thick $primary;
+    layout: vertical;
+}
+
+#interject-title {
+    height: 1;
+    content-align: center middle;
+    color: $text;
+    margin-bottom: 1;
+}
+
+#interject-help {
+    height: auto;
+    content-align: center middle;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#interject-input {
+    margin-bottom: 1;
+}
+
+#interject-hint {
+    height: 1;
+    content-align: center middle;
+    color: $text-muted;
+}

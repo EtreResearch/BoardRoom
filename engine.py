@@ -10,7 +10,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 import yaml
 from anthropic import APIError, AsyncAnthropic
@@ -47,6 +47,7 @@ class RoundStart:
     n: int
     total: int
     order: list[str]
+    directive: str | None = None
 
 
 @dataclass
@@ -68,7 +69,7 @@ class TurnEnd:
 
 @dataclass
 class VerdictRoundStart:
-    pass
+    directive: str | None = None
 
 
 @dataclass
@@ -144,20 +145,35 @@ def load_config(path: Path) -> tuple[list[Agent], str, int]:
     return agents, model, max_tokens
 
 
-def format_transcript(idea: str, transcript: list[Turn], next_role: str) -> str:
+def format_transcript(
+    idea: str,
+    transcript: list[Turn],
+    next_role: str,
+    directive: str | None = None,
+) -> str:
     lines = [f"IDEA: {idea}", "", "DISCUSSION SO FAR:"]
     if not transcript:
         lines.append("(you are the first to speak)")
     else:
         for turn in transcript:
             lines.append(f"[{turn.speaker}]: {turn.text}")
+    if directive:
+        lines += [
+            "",
+            f"USER DIRECTIVE: {directive}. Address this directly in your response.",
+        ]
     lines += ["", f"It is your turn. Respond as the {next_role}."]
     return "\n".join(lines)
 
 
-def format_verdict_prompt(idea: str, transcript: list[Turn], next_role: str) -> str:
+def format_verdict_prompt(
+    idea: str,
+    transcript: list[Turn],
+    next_role: str,
+    directive: str | None = None,
+) -> str:
     return (
-        format_transcript(idea, transcript, next_role)
+        format_transcript(idea, transcript, next_role, directive=directive)
         + "\n\nThe discussion is complete. Give your final verdict in this exact format:\n"
         "`VERDICT: GOOD` or `VERDICT: BAD`, followed by one sentence of reasoning.\n"
         "Do not write anything else."
@@ -230,15 +246,35 @@ async def run_boardroom(
     max_tokens: int,
     ordered: bool = False,
     seed: int | None = None,
+    consume_directive: Callable[[], str | None] | None = None,
 ) -> AsyncIterator[Event]:
+    """Drive the boardroom discussion.
+
+    `consume_directive` is an optional zero-arg callable invoked at each
+    round boundary (and before the verdict round). It should return any
+    pending user directive string (and clear it from the caller's state)
+    or None. The returned text is embedded in every agent's user message
+    for that phase via `format_transcript` / `format_verdict_prompt`.
+    """
     rng = random.Random(seed)
     transcript: list[Turn] = []
 
+    def _next_directive() -> str | None:
+        return consume_directive() if consume_directive else None
+
     for n in range(1, rounds + 1):
+        directive = _next_directive()
         speaking_order = list(agents) if ordered else rng.sample(agents, len(agents))
-        yield RoundStart(n=n, total=rounds, order=[a.role for a in speaking_order])
+        yield RoundStart(
+            n=n,
+            total=rounds,
+            order=[a.role for a in speaking_order],
+            directive=directive,
+        )
         for agent in speaking_order:
-            user_text = format_transcript(idea, transcript, agent.role)
+            user_text = format_transcript(
+                idea, transcript, agent.role, directive=directive,
+            )
             full_text = ""
             async for event in _stream_one(client, agent, user_text, model, max_tokens):
                 if isinstance(event, TurnEnd):
@@ -246,11 +282,14 @@ async def run_boardroom(
                 yield event
             transcript.append(Turn(speaker=agent.role, text=full_text.strip()))
 
-    yield VerdictRoundStart()
+    verdict_directive = _next_directive()
+    yield VerdictRoundStart(directive=verdict_directive)
     good = 0
     bad = 0
     for agent in agents:
-        user_text = format_verdict_prompt(idea, transcript, agent.role)
+        user_text = format_verdict_prompt(
+            idea, transcript, agent.role, directive=verdict_directive,
+        )
         full_text = ""
         async for event in _stream_one(client, agent, user_text, model, max_tokens):
             if isinstance(event, TurnEnd):

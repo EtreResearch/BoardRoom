@@ -55,6 +55,11 @@ A polished interface opens in your terminal:
 Key bindings:
 - `q` — quit
 - `s` — save the transcript so far to `transcript-YYYYMMDD-HHMMSS.md`
+- `i` — interject. Opens a modal where you can type a one-shot directive
+  (e.g. "focus on privacy concerns", "what about the European market?")
+  to steer the discussion. The current round keeps streaming uninterrupted;
+  your directive is queued and attached to every agent's prompt in the
+  *next* round (or the verdict round if you queued during the final round).
 
 ## Customizing the executives
 
