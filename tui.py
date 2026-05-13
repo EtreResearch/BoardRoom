@@ -6,9 +6,10 @@ A background worker iterates the engine's event stream and updates widgets.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
 from anthropic import AsyncAnthropic
 from rich.text import Text
 from textual import work
@@ -241,6 +242,11 @@ class BoardRoomApp(App):
         self._transcript: list[Turn] = []
         self._in_verdict_round = False
         self._client: AsyncAnthropic | None = None
+        # Session metadata captured for the saved transcript.
+        self._rounds_data: list[dict] = []          # [{n, speaking_order, turns: [...]}]
+        self._verdicts: list[dict] = []             # [{role, verdict, reasoning}]
+        self._tally: dict | None = None              # {good, bad, overall}
+        self._verdict_texts: dict[str, str] = {}    # role -> full verdict response text
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -292,6 +298,9 @@ class BoardRoomApp(App):
             seed=self.seed,
         ):
             if isinstance(event, RoundStart):
+                self._rounds_data.append(
+                    {"n": event.n, "speaking_order": list(event.order), "turns": []}
+                )
                 order_text = " → ".join(event.order)
                 chat.write(
                     Text(
@@ -331,16 +340,25 @@ class BoardRoomApp(App):
 
             elif isinstance(event, TurnEnd):
                 color = self._color(event.role)
+                text = event.full_text.strip()
                 chat.write(
                     Text.assemble(
                         (f"{event.role}: ", f"bold {color}"),
-                        Text(event.full_text.strip()),
+                        Text(text),
                     )
                 )
                 chat.write("")
                 current.update("")
-                self._transcript.append(Turn(speaker=event.role, text=event.full_text.strip()))
-                if not self._in_verdict_round:
+                self._transcript.append(Turn(speaker=event.role, text=text))
+                if self._in_verdict_round:
+                    # Save the raw verdict text so we can pair it with the
+                    # parsed GOOD/BAD enum when the Verdict event arrives.
+                    self._verdict_texts[event.role] = text
+                else:
+                    if self._rounds_data:
+                        self._rounds_data[-1]["turns"].append(
+                            {"speaker": event.role, "text": text}
+                        )
                     roster.update_status(event.role, "done")
 
             elif isinstance(event, Verdict):
@@ -351,9 +369,21 @@ class BoardRoomApp(App):
                 }[event.verdict]
                 roster.update_status(event.role, status)
                 tally.add_vote(event.verdict)
+                self._verdicts.append(
+                    {
+                        "role": event.role,
+                        "verdict": event.verdict,
+                        "reasoning": self._verdict_texts.get(event.role, ""),
+                    }
+                )
 
             elif isinstance(event, TallyComplete):
                 tally.finalize(event.good, event.bad, event.overall)
+                self._tally = {
+                    "good": event.good,
+                    "bad": event.bad,
+                    "overall": event.overall,
+                }
                 styled = {
                     "GOOD": "[bold green]GOOD[/]",
                     "BAD": "[bold red]BAD[/]",
@@ -376,14 +406,94 @@ class BoardRoomApp(App):
                 return a.color
         return "white"
 
+    def _build_transcript_document(self) -> str:
+        """Render the full session as a Markdown doc with YAML frontmatter."""
+        usage = self.query_one(TokenUsage)
+        saved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+        meta = {
+            "saved_at": saved_at,
+            "idea": self.idea,
+            "config": {
+                "model": self.model,
+                "rounds": self.rounds,
+                "max_tokens": self.max_tokens,
+                "ordered": self.ordered,
+                "seed": self.seed,
+            },
+            "agents": [
+                {"role": a.role, "color": a.color, "system": a.system}
+                for a in self.agents
+            ],
+            "rounds": self._rounds_data,
+            "verdicts": self._verdicts,
+            "tally": self._tally,
+            "usage": {
+                "input_tokens": usage.total_input,
+                "output_tokens": usage.total_output,
+                "cache_creation_input_tokens": usage.total_cache_write,
+                "cache_read_input_tokens": usage.total_cache_read,
+                "estimated_cost_usd": round(usage.total_cost, 6),
+            },
+        }
+        frontmatter = yaml.safe_dump(
+            meta,
+            sort_keys=False,
+            allow_unicode=True,
+            default_flow_style=False,
+        )
+
+        order_label = "ordered" if self.ordered else "shuffled"
+        header = (
+            f"# BoardRoom transcript\n\n"
+            f"**Idea:** {self.idea}\n\n"
+            f"**Model:** {self.model} · **Rounds:** {self.rounds} · "
+            f"**Order:** {order_label}"
+        )
+        if self.seed is not None:
+            header += f" · **Seed:** {self.seed}"
+        header += f"  \n**Saved:** {saved_at}\n"
+
+        body: list[str] = [f"---\n{frontmatter}---\n", header]
+
+        for r in self._rounds_data:
+            body.append(f"\n## Round {r['n']} of {self.rounds}\n")
+            order_text = " → ".join(r["speaking_order"])
+            body.append(f"_Speaking order: {order_text}_\n")
+            for t in r["turns"]:
+                body.append(f"\n### {t['speaker']}\n\n{t['text']}\n")
+
+        if self._verdicts:
+            body.append("\n## Verdicts\n")
+            for v in self._verdicts:
+                body.append(
+                    f"- **{v['role']}** — **{v['verdict']}** — "
+                    f"_{v['reasoning']}_"
+                )
+
+        if self._tally is not None:
+            t = self._tally
+            body.append(
+                f"\n## Tally\n\n**{t['good']} GOOD / {t['bad']} BAD → {t['overall']}**\n"
+            )
+
+        if usage.last_role is not None:
+            body.append(
+                "\n## Usage\n\n"
+                f"- Input: {usage.total_input:,} tokens\n"
+                f"- Output: {usage.total_output:,} tokens\n"
+                f"- Cache write: {usage.total_cache_write:,} · "
+                f"Cache read: {usage.total_cache_read:,}\n"
+                f"- Estimated cost: ${usage.total_cost:.4f}\n"
+            )
+
+        return "\n".join(body)
+
     def action_save_transcript(self) -> None:
         if not self._transcript:
             self.notify("Nothing to save yet.")
             return
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         path = Path(f"transcript-{ts}.md")
-        lines = ["# BoardRoom transcript", "", f"**Idea:** {self.idea}", ""]
-        for turn in self._transcript:
-            lines += [f"## {turn.speaker}", "", turn.text, ""]
-        path.write_text("\n".join(lines))
+        path.write_text(self._build_transcript_document())
         self.notify(f"Saved {path.name}")
