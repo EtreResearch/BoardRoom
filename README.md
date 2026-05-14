@@ -85,3 +85,27 @@ is surfaced to the UI: the TUI's sidebar updates after every turn, and
 stdout mode prints a one-line `Usage:` summary at the end. Cost estimates
 use a hardcoded price table in `engine.MODEL_PRICING` — edit that dict if
 Anthropic's published pricing changes.
+
+## The verdict tally
+
+The verdict round asks each agent for three things, not just one: their vote
+(`GOOD` / `BAD`), a **confidence** score from 1 to 5, and one or two
+sentences of reasoning. The tally then surfaces conviction strength
+alongside the raw count so a borderline GOOD can't visually masquerade as a
+strongly held one:
+
+```
+Verdict: moderate GOOD  ·  ⚠ 1 strong dissent
+GOOD  1 strong · 2 lean
+BAD   1 strong · 0 lean
+Weighted: +35%  (raw: 3 GOOD / 1 BAD)
+```
+
+- **Confidence buckets**: 4–5 → *strong*, 2–3 → *lean*, 1 (or missing) → *weak*.
+- **Headline** combines direction and conviction: *weak / moderate / strong GOOD*
+  or *BAD*, or *split / deeply split* for ties.
+- **⚠ Strong dissent** appears when any agent voted opposite the majority
+  with confidence ≥ 4 — the dissenter most worth listening to is parked
+  right next to the headline.
+- **Weighted** is the signed conviction in [−100%, +100%] (sum of
+  `confidence × sign` divided by maximum possible).

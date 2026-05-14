@@ -68,6 +68,11 @@ the dispatcher itself.
   the `Event` union, and handle it in **both** renderers (`cli_renderer.py`
   and `tui.py`'s `_run_discussion`). Forgetting one renderer is the most
   common refactor bug.
+- **Verdict round** asks for three structured fields per agent (`VERDICT`,
+  `CONFIDENCE: 1-5`, `REASONING`). `engine.compute_tally` turns the
+  parsed `Verdict` list into a stratified tally (strong/lean/weak buckets,
+  signed-conviction headline, strong-dissent flag). All of that lives on
+  the `TallyComplete` event so both renderers display the same numbers.
 - **Streaming partial output in the TUI** goes through the `Static#current`
   widget — `RichLog.write` is for fully-formed lines only. Don't write partial
   tokens to the log directly.

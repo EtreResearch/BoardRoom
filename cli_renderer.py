@@ -36,13 +36,23 @@ def _color_for(role: str, agents: list[Agent]) -> str:
     return "white"
 
 
+def _headline_style(headline: str) -> str:
+    if "GOOD" in headline:
+        return "bold green"
+    if "BAD" in headline:
+        return "bold red"
+    return "bold yellow"
+
+
 async def render(
     events: AsyncIterator[Event],
     console: Console,
     agents: list[Agent],
 ) -> None:
     in_verdicts = False
-    verdicts: dict[str, str] = {}
+    # Capture each agent's (verdict, confidence, reasoning) so the per-agent
+    # block can show the confidence number alongside the vote.
+    verdicts: dict[str, tuple[str, int | None, str | None]] = {}
     total_input = 0
     total_output = 0
     total_cache_write = 0
@@ -73,7 +83,7 @@ async def render(
         elif isinstance(event, TurnEnd):
             print("\n")
         elif isinstance(event, Verdict):
-            verdicts[event.role] = event.verdict
+            verdicts[event.role] = (event.verdict, event.confidence, event.reasoning)
         elif isinstance(event, UsageReport):
             total_input += event.input_tokens
             total_output += event.output_tokens
@@ -82,7 +92,7 @@ async def render(
             total_cost += compute_cost(event)
         elif isinstance(event, TallyComplete):
             console.print(Rule("Tally", style="dim"))
-            for role, v in verdicts.items():
+            for role, (v, conf, _reason) in verdicts.items():
                 marker = (
                     "[green]GOOD[/]"
                     if v == "GOOD"
@@ -90,14 +100,42 @@ async def render(
                     if v == "BAD"
                     else "[yellow]UNCLEAR[/]"
                 )
-                console.print(f"  {role:<16} {marker}")
-            overall_styled = {
-                "GOOD": "[bold green]GOOD[/]",
-                "BAD": "[bold red]BAD[/]",
-                "SPLIT": "[bold yellow]SPLIT[/]",
-            }[event.overall]
+                conf_str = f"  [dim](conf {conf}/5)[/]" if conf else ""
+                console.print(f"  {role:<16} {marker}{conf_str}")
+
+            # Stratified tally + headline + dissent flag.
+            headline = event.headline or event.overall
+            headline_styled = f"[{_headline_style(headline)}]{headline}[/]"
+            warning = (
+                f"  [yellow]⚠ {event.strong_dissent} strong dissent[/]"
+                if event.strong_dissent
+                else ""
+            )
+            console.print(f"\n  Verdict: {headline_styled}{warning}")
+
+            # Strata line: only print sides that actually have votes.
+            good_total = event.strong_good + event.lean_good + event.weak_good
+            bad_total = event.strong_bad + event.lean_bad + event.weak_bad
+            strata_parts: list[str] = []
+            if good_total:
+                strata_parts.append(
+                    f"[green]{event.strong_good} strong · {event.lean_good} lean GOOD[/]"
+                )
+            if bad_total:
+                strata_parts.append(
+                    f"[red]{event.strong_bad} strong · {event.lean_bad} lean BAD[/]"
+                )
+            if event.weak_good or event.weak_bad:
+                weak = event.weak_good + event.weak_bad
+                strata_parts.append(f"[dim]{weak} weak[/]")
+            if event.unclear:
+                strata_parts.append(f"[yellow]{event.unclear} unclear[/]")
+            if strata_parts:
+                console.print("  " + "  ·  ".join(strata_parts))
+
             console.print(
-                f"\n  Tally: {event.good} GOOD / {event.bad} BAD  →  Verdict: {overall_styled}"
+                f"  [dim]Weighted: {event.net_score:+.0%}  "
+                f"(raw: {event.good} GOOD / {event.bad} BAD)[/]"
             )
             if total_input or total_output or total_cache_read or total_cache_write:
                 total_in_all = total_input + total_cache_write + total_cache_read
