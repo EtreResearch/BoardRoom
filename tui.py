@@ -20,6 +20,8 @@ from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 
 from engine import (
     Agent,
+    DecisionFrame,
+    DecisionFrameStart,
     Error,
     RoundStart,
     TallyComplete,
@@ -341,8 +343,9 @@ class BoardRoomApp(App):
         self._client: AsyncAnthropic | None = None
         # Session metadata captured for the saved transcript.
         self._rounds_data: list[dict] = []          # [{n, speaking_order, directive, turns: [...]}]
-        self._verdicts: list[dict] = []             # [{role, verdict, reasoning}]
-        self._tally: dict | None = None              # {good, bad, overall}
+        self._verdicts: list[dict] = []             # [{role, verdict, confidence, reasoning, disconfirming}]
+        self._tally: dict | None = None              # {good, bad, overall, ...strata}
+        self._decision_frame: dict | None = None     # {case_for, case_against, biggest_unknown, conditions}
         self._verdict_directive: str | None = None   # directive applied to the verdict round
         # Interjection state.
         self._pending_directive: str | None = None
@@ -493,6 +496,7 @@ class BoardRoomApp(App):
                         "verdict": event.verdict,
                         "confidence": event.confidence,
                         "reasoning": event.reasoning or event.text,
+                        "disconfirming": event.disconfirming,
                     }
                 )
 
@@ -531,6 +535,47 @@ class BoardRoomApp(App):
                     f"weighted {event.net_score:+.0%})[/]"
                 )
 
+            elif isinstance(event, DecisionFrameStart):
+                chat.write(Text("── Decision frame ──", style="dim"))
+                chat.write(Text("Synthesizing…", style="italic dim"))
+
+            elif isinstance(event, DecisionFrame):
+                # Capture for the saved transcript.
+                self._decision_frame = {
+                    "case_for": event.case_for,
+                    "case_against": event.case_against,
+                    "biggest_unknown": event.biggest_unknown,
+                    "conditions": list(event.conditions),
+                }
+                if event.case_for:
+                    chat.write(
+                        Text.assemble(
+                            ("Case for: ", "bold green"),
+                            Text(event.case_for),
+                        )
+                    )
+                    chat.write("")
+                if event.case_against:
+                    chat.write(
+                        Text.assemble(
+                            ("Case against: ", "bold red"),
+                            Text(event.case_against),
+                        )
+                    )
+                    chat.write("")
+                if event.biggest_unknown:
+                    chat.write(
+                        Text.assemble(
+                            ("Biggest unknown: ", "bold yellow"),
+                            Text(event.biggest_unknown),
+                        )
+                    )
+                    chat.write("")
+                if event.conditions:
+                    chat.write(Text("Conditions for proceeding:", style="bold"))
+                    for c in event.conditions:
+                        chat.write(Text.assemble(("  • ", "bold"), Text(c)))
+
             elif isinstance(event, UsageReport):
                 usage_widget.add_usage(event)
 
@@ -566,6 +611,7 @@ class BoardRoomApp(App):
             "verdict_directive": self._verdict_directive,
             "verdicts": self._verdicts,
             "tally": self._tally,
+            "decision_frame": self._decision_frame,
             "usage": {
                 "input_tokens": usage.total_input,
                 "output_tokens": usage.total_output,
@@ -613,6 +659,10 @@ class BoardRoomApp(App):
                     f"- **{v['role']}** — **{v['verdict']}**{conf_str} — "
                     f"_{v['reasoning']}_"
                 )
+                if v.get("disconfirming"):
+                    body.append(
+                        f"  - _Strongest reason I might be wrong:_ {v['disconfirming']}"
+                    )
 
         if self._tally is not None:
             t = self._tally
@@ -651,6 +701,22 @@ class BoardRoomApp(App):
                 f"weighted {net:+.0%}_\n"
             )
             body.append("\n".join(tally_lines))
+
+        if self._decision_frame is not None:
+            df = self._decision_frame
+            df_lines = ["\n## Decision frame\n"]
+            if df.get("case_for"):
+                df_lines.append(f"**Case for:** {df['case_for']}\n")
+            if df.get("case_against"):
+                df_lines.append(f"**Case against:** {df['case_against']}\n")
+            if df.get("biggest_unknown"):
+                df_lines.append(f"**Biggest unknown:** {df['biggest_unknown']}\n")
+            if df.get("conditions"):
+                df_lines.append("**Conditions for proceeding:**\n")
+                for c in df["conditions"]:
+                    df_lines.append(f"- {c}")
+                df_lines.append("")
+            body.append("\n".join(df_lines))
 
         if usage.last_role is not None:
             # Match the TUI sidebar: "Input" is the full count the model saw

@@ -15,6 +15,8 @@ from rich.text import Text
 
 from engine import (
     Agent,
+    DecisionFrame,
+    DecisionFrameStart,
     Error,
     Event,
     RoundStart,
@@ -149,6 +151,23 @@ async def render(
                     f"\n  Usage: {total_in_all:,} in · {total_output:,} out"
                     f"  [dim]~${total_cost:.4f}[/]{cache_note}"
                 )
+        elif isinstance(event, DecisionFrameStart):
+            console.print(Rule("Decision frame", style="dim"))
+            console.print("[dim italic]Synthesizing…[/]")
+        elif isinstance(event, DecisionFrame):
+            if event.case_for:
+                console.print(Text.assemble(("Case for: ", "bold green"), event.case_for))
+                console.print("")
+            if event.case_against:
+                console.print(Text.assemble(("Case against: ", "bold red"), event.case_against))
+                console.print("")
+            if event.biggest_unknown:
+                console.print(Text.assemble(("Biggest unknown: ", "bold yellow"), event.biggest_unknown))
+                console.print("")
+            if event.conditions:
+                console.print("[bold]Conditions for proceeding:[/]")
+                for c in event.conditions:
+                    console.print(Text.assemble(("  • ", "bold"), c))
         elif isinstance(event, Error):
             print()
             sys.exit(f"Anthropic API error while {event.role} was speaking: {event.message}")
