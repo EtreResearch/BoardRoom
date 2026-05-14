@@ -254,7 +254,6 @@ def compute_tally(verdicts: list["Verdict"]) -> dict:
     strong_bad = lean_bad = weak_bad = 0
     unclear = 0
     signed_total = 0.0
-    n_voted = 0
 
     for v in verdicts:
         if v.verdict == "GOOD":
@@ -266,7 +265,6 @@ def compute_tally(verdicts: list["Verdict"]) -> dict:
             else:
                 weak_good += 1
             signed_total += (v.confidence if v.confidence else 1)
-            n_voted += 1
         elif v.verdict == "BAD":
             bucket = _bucket(v.confidence)
             if bucket == "strong":
@@ -276,15 +274,16 @@ def compute_tally(verdicts: list["Verdict"]) -> dict:
             else:
                 weak_bad += 1
             signed_total -= (v.confidence if v.confidence else 1)
-            n_voted += 1
         else:
             unclear += 1
 
     good_count = strong_good + lean_good + weak_good
     bad_count = strong_bad + lean_bad + weak_bad
 
-    # Max possible signed conviction = ±5 per voting agent.
-    max_total = n_voted * 5 if n_voted else 1
+    # Max possible signed conviction = ±5 per agent in the round. UNCLEAR
+    # agents are included so they dilute the conviction (1 strong GOOD + 3
+    # UNCLEAR should not read as "strong GOOD" — the panel is uncertain).
+    max_total = len(verdicts) * 5 if verdicts else 1
     net_score = signed_total / max_total
 
     # Headline: direction + conviction strength.
@@ -325,6 +324,9 @@ def compute_tally(verdicts: list["Verdict"]) -> dict:
         strong_dissent = strong_good + strong_bad
 
     return {
+        "good": good_count,
+        "bad": bad_count,
+        "overall": overall_verdict(good_count, bad_count),
         "strong_good": strong_good,
         "lean_good": lean_good,
         "weak_good": weak_good,
@@ -429,8 +431,6 @@ async def run_boardroom(
 
     verdict_directive = _next_directive()
     yield VerdictRoundStart(directive=verdict_directive)
-    good = 0
-    bad = 0
     collected_verdicts: list[Verdict] = []
     for agent in agents:
         user_text = format_verdict_prompt(
@@ -441,27 +441,14 @@ async def run_boardroom(
             if isinstance(event, TurnEnd):
                 full_text = event.full_text
             yield event
-        verdict_label = parse_verdict(full_text)
-        confidence = parse_confidence(full_text)
-        reasoning = parse_reasoning(full_text)
-        if verdict_label == "GOOD":
-            good += 1
-        elif verdict_label == "BAD":
-            bad += 1
         v = Verdict(
             role=agent.role,
-            verdict=verdict_label,
+            verdict=parse_verdict(full_text),
             text=full_text.strip(),
-            confidence=confidence,
-            reasoning=reasoning,
+            confidence=parse_confidence(full_text),
+            reasoning=parse_reasoning(full_text),
         )
         collected_verdicts.append(v)
         yield v
 
-    tally_extras = compute_tally(collected_verdicts)
-    yield TallyComplete(
-        good=good,
-        bad=bad,
-        overall=overall_verdict(good, bad),
-        **tally_extras,
-    )
+    yield TallyComplete(**compute_tally(collected_verdicts))
