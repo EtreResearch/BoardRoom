@@ -77,13 +77,30 @@ class AgentRoster(Vertical):
 
 
 class TallySummary(Static):
-    """Sidebar widget showing live and final vote tally."""
+    """Sidebar widget showing live and final vote tally.
+
+    During the verdict round, displays a running raw count. On
+    `finalize()` (driven by the `TallyComplete` event), swaps to a
+    stratified view that shows conviction strength so a weak GOOD can't
+    visually masquerade as a strong GOOD.
+    """
 
     def __init__(self) -> None:
         super().__init__("", id="tally")
         self.good = 0
         self.bad = 0
         self.overall: str | None = None
+        # Stratified fields populated on finalize().
+        self.strong_good = 0
+        self.lean_good = 0
+        self.weak_good = 0
+        self.strong_bad = 0
+        self.lean_bad = 0
+        self.weak_bad = 0
+        self.unclear = 0
+        self.net_score = 0.0
+        self.headline = ""
+        self.strong_dissent = 0
         self.update(self._render())
 
     def add_vote(self, verdict: str) -> None:
@@ -93,22 +110,70 @@ class TallySummary(Static):
             self.bad += 1
         self.update(self._render())
 
-    def finalize(self, good: int, bad: int, overall: str) -> None:
-        self.good = good
-        self.bad = bad
-        self.overall = overall
+    def finalize(self, event: "TallyComplete") -> None:
+        self.good = event.good
+        self.bad = event.bad
+        self.overall = event.overall
+        self.strong_good = event.strong_good
+        self.lean_good = event.lean_good
+        self.weak_good = event.weak_good
+        self.strong_bad = event.strong_bad
+        self.lean_bad = event.lean_bad
+        self.weak_bad = event.weak_bad
+        self.unclear = event.unclear
+        self.net_score = event.net_score
+        self.headline = event.headline
+        self.strong_dissent = event.strong_dissent
         self.update(self._render())
 
+    @staticmethod
+    def _headline_color(headline: str) -> str:
+        if "GOOD" in headline:
+            return "green"
+        if "BAD" in headline:
+            return "red"
+        return "yellow"
+
     def _render(self) -> str:
-        body = f"{self.good} GOOD / {self.bad} BAD"
+        # Live view (during verdict round, before TallyComplete).
         if self.overall is None:
-            return f"[b]Tally[/]\n\n{body}"
-        styled = {
-            "GOOD": "[bold green]GOOD[/]",
-            "BAD": "[bold red]BAD[/]",
-            "SPLIT": "[bold yellow]SPLIT[/]",
-        }[self.overall]
-        return f"[b]Tally[/]\n\n{body}\n\nVerdict: {styled}"
+            return f"[b]Tally[/]\n\n{self.good} GOOD · {self.bad} BAD"
+
+        # Finalized: stratified view.
+        color = self._headline_color(self.headline or self.overall)
+        warning = (
+            f"  [yellow]⚠ {self.strong_dissent} strong dissent[/]"
+            if self.strong_dissent
+            else ""
+        )
+        headline = self.headline or self.overall
+
+        lines = [
+            "[b]Tally[/]",
+            "",
+            f"[bold {color}]{headline}[/]{warning}",
+            "",
+        ]
+        good_total = self.strong_good + self.lean_good + self.weak_good
+        bad_total = self.strong_bad + self.lean_bad + self.weak_bad
+        if good_total:
+            lines.append(
+                f"[green]GOOD[/]  {self.strong_good} strong · "
+                f"{self.lean_good} lean"
+            )
+        if bad_total:
+            lines.append(
+                f"[red]BAD[/]   {self.strong_bad} strong · "
+                f"{self.lean_bad} lean"
+            )
+        weak_total = self.weak_good + self.weak_bad
+        if weak_total:
+            lines.append(f"[dim]{weak_total} weak[/]")
+        if self.unclear:
+            lines.append(f"[yellow]{self.unclear} unclear[/]")
+        lines.append("")
+        lines.append(f"[dim]Weighted: {self.net_score:+.0%}[/]")
+        return "\n".join(lines)
 
 
 class TokenUsage(Static):
@@ -426,25 +491,44 @@ class BoardRoomApp(App):
                     {
                         "role": event.role,
                         "verdict": event.verdict,
-                        "reasoning": event.text,
+                        "confidence": event.confidence,
+                        "reasoning": event.reasoning or event.text,
                     }
                 )
 
             elif isinstance(event, TallyComplete):
-                tally.finalize(event.good, event.bad, event.overall)
+                tally.finalize(event)
                 self._tally = {
                     "good": event.good,
                     "bad": event.bad,
                     "overall": event.overall,
+                    "headline": event.headline,
+                    "net_score": round(event.net_score, 4),
+                    "strong_good": event.strong_good,
+                    "lean_good": event.lean_good,
+                    "weak_good": event.weak_good,
+                    "strong_bad": event.strong_bad,
+                    "lean_bad": event.lean_bad,
+                    "weak_bad": event.weak_bad,
+                    "unclear": event.unclear,
+                    "strong_dissent": event.strong_dissent,
                 }
-                styled = {
-                    "GOOD": "[bold green]GOOD[/]",
-                    "BAD": "[bold red]BAD[/]",
-                    "SPLIT": "[bold yellow]SPLIT[/]",
-                }[event.overall]
+                headline = event.headline or event.overall
+                headline_color = (
+                    "green" if "GOOD" in headline
+                    else "red" if "BAD" in headline
+                    else "yellow"
+                )
+                warning = (
+                    f"  [yellow]⚠ {event.strong_dissent} strong dissent[/]"
+                    if event.strong_dissent
+                    else ""
+                )
                 chat.write(
-                    f"[b]Final verdict:[/] {styled}  "
-                    f"[dim]({event.good} GOOD / {event.bad} BAD)[/]"
+                    f"[b]Final verdict:[/] [bold {headline_color}]{headline}[/]"
+                    f"{warning}  "
+                    f"[dim]({event.good} GOOD / {event.bad} BAD · "
+                    f"weighted {event.net_score:+.0%})[/]"
                 )
 
             elif isinstance(event, UsageReport):
@@ -524,16 +608,49 @@ class BoardRoomApp(App):
             if self._verdict_directive:
                 body.append(f"_User directive: {self._verdict_directive}_\n")
             for v in self._verdicts:
+                conf_str = f" (conf {v['confidence']}/5)" if v.get("confidence") else ""
                 body.append(
-                    f"- **{v['role']}** — **{v['verdict']}** — "
+                    f"- **{v['role']}** — **{v['verdict']}**{conf_str} — "
                     f"_{v['reasoning']}_"
                 )
 
         if self._tally is not None:
             t = self._tally
-            body.append(
-                f"\n## Tally\n\n**{t['good']} GOOD / {t['bad']} BAD → {t['overall']}**\n"
+            headline = t.get("headline") or t["overall"]
+            warning = (
+                f"  ⚠ {t['strong_dissent']} strong dissent"
+                if t.get("strong_dissent")
+                else ""
             )
+            tally_lines = [
+                f"\n## Tally\n",
+                f"**{headline}**{warning}",
+                "",
+            ]
+            good_total = t.get("strong_good", 0) + t.get("lean_good", 0) + t.get("weak_good", 0)
+            bad_total = t.get("strong_bad", 0) + t.get("lean_bad", 0) + t.get("weak_bad", 0)
+            if good_total:
+                tally_lines.append(
+                    f"- GOOD: {t.get('strong_good', 0)} strong · "
+                    f"{t.get('lean_good', 0)} lean"
+                )
+            if bad_total:
+                tally_lines.append(
+                    f"- BAD: {t.get('strong_bad', 0)} strong · "
+                    f"{t.get('lean_bad', 0)} lean"
+                )
+            weak_total = t.get("weak_good", 0) + t.get("weak_bad", 0)
+            if weak_total:
+                tally_lines.append(f"- Weak: {weak_total}")
+            if t.get("unclear"):
+                tally_lines.append(f"- Unclear: {t['unclear']}")
+            tally_lines.append("")
+            net = t.get("net_score", 0.0)
+            tally_lines.append(
+                f"_Raw count: {t['good']} GOOD / {t['bad']} BAD · "
+                f"weighted {net:+.0%}_\n"
+            )
+            body.append("\n".join(tally_lines))
 
         if usage.last_role is not None:
             # Match the TUI sidebar: "Input" is the full count the model saw
