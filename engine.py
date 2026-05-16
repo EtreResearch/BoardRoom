@@ -20,7 +20,29 @@ DEFAULT_MAX_TOKENS = 600
 DEFAULT_ROUNDS = 3
 VERDICT_RE = re.compile(r"VERDICT:\s*(GOOD|BAD)", re.IGNORECASE)
 CONFIDENCE_RE = re.compile(r"CONFIDENCE:\s*([1-5])", re.IGNORECASE)
-REASONING_RE = re.compile(r"REASONING:\s*(.+?)(?:\n\s*$|\Z)", re.IGNORECASE | re.DOTALL)
+REASONING_RE = re.compile(
+    r"REASONING:\s*(.+?)(?=DISCONFIRMING:|\Z)", re.IGNORECASE | re.DOTALL
+)
+DISCONFIRMING_RE = re.compile(
+    r"DISCONFIRMING:\s*(.+?)\Z", re.IGNORECASE | re.DOTALL
+)
+
+# Decision-frame synthesis output parsers (one field stops at the next).
+CASE_FOR_RE = re.compile(
+    r"CASE_FOR:\s*(.+?)(?=CASE_AGAINST:|BIGGEST_UNKNOWN:|CONDITIONS:|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+CASE_AGAINST_RE = re.compile(
+    r"CASE_AGAINST:\s*(.+?)(?=BIGGEST_UNKNOWN:|CONDITIONS:|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+BIGGEST_UNKNOWN_RE = re.compile(
+    r"BIGGEST_UNKNOWN:\s*(.+?)(?=CONDITIONS:|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+CONDITIONS_RE = re.compile(
+    r"CONDITIONS:\s*(.+?)\Z", re.IGNORECASE | re.DOTALL
+)
 
 # Anthropic per-million-token pricing in USD. Override by editing this dict
 # or extending it for new model IDs.
@@ -81,6 +103,22 @@ class Verdict:
     text: str
     confidence: int | None = None  # 1-5, None if unparseable
     reasoning: str | None = None   # parsed REASONING line, None if unparseable
+    disconfirming: str | None = None  # parsed DISCONFIRMING line, None if unparseable
+
+
+@dataclass
+class DecisionFrameStart:
+    """Marker that the engine is about to synthesize the decision frame."""
+    pass
+
+
+@dataclass
+class DecisionFrame:
+    """Synthesized neutral summary of the panel's verdicts."""
+    case_for: str
+    case_against: str
+    biggest_unknown: str
+    conditions: list[str]
 
 
 @dataclass
@@ -126,6 +164,8 @@ Event = (
     | VerdictRoundStart
     | Verdict
     | TallyComplete
+    | DecisionFrameStart
+    | DecisionFrame
     | UsageReport
     | Error
 )
@@ -195,6 +235,7 @@ def format_verdict_prompt(
         "VERDICT: GOOD\n"
         "CONFIDENCE: 4\n"
         "REASONING: One or two sentences explaining your vote.\n"
+        "DISCONFIRMING: The single strongest reason your vote might be wrong, in one sentence.\n"
         "\n"
         "Rules:\n"
         "- VERDICT must be exactly GOOD or BAD.\n"
@@ -202,8 +243,121 @@ def format_verdict_prompt(
         " 5 = strongly held). Be honest: pick 1-2 if you're on the fence, 4-5 only if"
         " the case is compelling.\n"
         "- REASONING is one or two sentences.\n"
+        "- DISCONFIRMING: even though you voted, articulate the most credible counter-"
+        "argument against your own position. Push yourself out of confirmation bias."
+        " One sentence.\n"
         "- Output nothing else — no preamble, no markdown."
     )
+
+
+SYNTHESIZER_SYSTEM = (
+    "You are the panel's secretary. Your job is to synthesize a neutral "
+    "decision frame from the executives' verdicts and the discussion that "
+    "led to them. You do not have an opinion; you reflect the panel's "
+    "thinking honestly, including dissent — especially when it's a minority."
+)
+
+
+def format_decision_frame_prompt(
+    idea: str,
+    transcript: list[Turn],
+    verdicts: list[Verdict],
+    tally_headline: str,
+    strong_dissent: int,
+) -> str:
+    """Build the user message for the decision-frame synthesis call."""
+    lines = [f"IDEA: {idea}", ""]
+    if transcript:
+        lines.append("DISCUSSION:")
+        for turn in transcript:
+            lines.append(f"[{turn.speaker}]: {turn.text}")
+        lines.append("")
+    lines.append("PER-AGENT VERDICTS:")
+    for v in verdicts:
+        conf = f"conf {v.confidence}/5" if v.confidence else "conf —"
+        reason = v.reasoning or "(no reasoning)"
+        disconfirm = v.disconfirming or "(none stated)"
+        lines.append(
+            f"- [{v.role}] {v.verdict} ({conf}). Reasoning: {reason} "
+            f"Their own counter-argument: {disconfirm}"
+        )
+    lines.append("")
+    lines.append(f"TALLY HEADLINE: {tally_headline}")
+    if strong_dissent:
+        lines.append(
+            f"STRONG DISSENT: {strong_dissent} agent(s) voted opposite the majority "
+            "with high confidence. Capture their objection prominently."
+        )
+    lines += [
+        "",
+        "Synthesize a decision frame in EXACTLY this format:",
+        "",
+        "CASE_FOR: Two sentences. The strongest affirmative argument, synthesized across "
+        "the panel — not a copy of any one agent's words.",
+        "CASE_AGAINST: Two sentences. The strongest objection, even when it's a "
+        "minority view. This is where strong dissent goes.",
+        "BIGGEST_UNKNOWN: One sentence. The single question whose answer would most "
+        "change the panel's view. A specific unknown, not a generic risk.",
+        "CONDITIONS:",
+        "- Three to five bullets. Concrete preconditions that must hold for the idea to work.",
+        "- Each bullet is a single line, terse and actionable.",
+        "",
+        "Rules:",
+        "- Be neutral. Don't editorialize.",
+        "- Don't reuse the agents' phrasing verbatim — synthesize.",
+        "- Don't soften minority dissent.",
+        "- Output only the four sections. No preamble, no closing remarks.",
+    ]
+    return "\n".join(lines)
+
+
+async def _synthesize_decision_frame(
+    client: AsyncAnthropic,
+    idea: str,
+    transcript: list[Turn],
+    verdicts: list[Verdict],
+    tally: TallyComplete,
+    model: str,
+) -> AsyncIterator[Event]:
+    """One API call to synthesize a `DecisionFrame`.
+
+    Yields a `UsageReport` (so cost tracking stays accurate) followed by
+    a `DecisionFrame`, or an `Error` if the call fails. Non-streaming —
+    the synthesized output is short and arrives as a single block.
+    """
+    user_text = format_decision_frame_prompt(
+        idea, transcript, verdicts,
+        tally_headline=tally.headline or tally.overall,
+        strong_dissent=tally.strong_dissent,
+    )
+    chunks: list[str] = []
+    final_message = None
+    try:
+        async with client.messages.stream(
+            model=model,
+            max_tokens=500,  # Synthesis output is short and bounded.
+            system=SYNTHESIZER_SYSTEM,
+            messages=[{"role": "user", "content": user_text}],
+        ) as stream:
+            async for chunk in stream.text_stream:
+                chunks.append(chunk)
+            final_message = await stream.get_final_message()
+    except APIError as e:
+        yield Error("(synthesizer)", f"Decision-frame synthesis failed: {e}")
+        return
+
+    if final_message is not None and getattr(final_message, "usage", None) is not None:
+        u = final_message.usage
+        yield UsageReport(
+            role="(synthesizer)",
+            model=model,
+            input_tokens=getattr(u, "input_tokens", 0) or 0,
+            output_tokens=getattr(u, "output_tokens", 0) or 0,
+            cache_creation_input_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
+            cache_read_input_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+        )
+
+    yield parse_decision_frame("".join(chunks))
 
 
 def parse_verdict(text: str) -> str:
@@ -224,6 +378,49 @@ def parse_reasoning(text: str) -> str | None:
         return None
     reasoning = match.group(1).strip()
     return reasoning or None
+
+
+def parse_disconfirming(text: str) -> str | None:
+    """Parse `DISCONFIRMING: ...` block. Returns None if missing."""
+    match = DISCONFIRMING_RE.search(text)
+    if not match:
+        return None
+    disconfirming = match.group(1).strip()
+    return disconfirming or None
+
+
+def parse_decision_frame(text: str) -> DecisionFrame:
+    """Parse a synthesis response into a `DecisionFrame`.
+
+    Missing or empty sections degrade to empty strings / lists rather than
+    raising — the renderer can choose how to handle partial output.
+    """
+    def _grab(regex: re.Pattern) -> str:
+        m = regex.search(text)
+        return m.group(1).strip() if m else ""
+
+    case_for = _grab(CASE_FOR_RE)
+    case_against = _grab(CASE_AGAINST_RE)
+    biggest_unknown = _grab(BIGGEST_UNKNOWN_RE)
+
+    conditions: list[str] = []
+    m = CONDITIONS_RE.search(text)
+    if m:
+        block = m.group(1).strip()
+        for line in block.splitlines():
+            stripped = line.strip()
+            # Accept "- ...", "* ...", or "• ..." bullets.
+            if stripped.startswith(("-", "*", "•")):
+                content = stripped[1:].strip()
+                if content:
+                    conditions.append(content)
+
+    return DecisionFrame(
+        case_for=case_for,
+        case_against=case_against,
+        biggest_unknown=biggest_unknown,
+        conditions=conditions,
+    )
 
 
 def overall_verdict(good: int, bad: int) -> str:
@@ -447,8 +644,18 @@ async def run_boardroom(
             text=full_text.strip(),
             confidence=parse_confidence(full_text),
             reasoning=parse_reasoning(full_text),
+            disconfirming=parse_disconfirming(full_text),
         )
         collected_verdicts.append(v)
         yield v
 
-    yield TallyComplete(**compute_tally(collected_verdicts))
+    tally = TallyComplete(**compute_tally(collected_verdicts))
+    yield tally
+
+    # Synthesize the decision frame from the verdicts + discussion.
+    # Adds one extra LLM call per run, bounded to a small max_tokens.
+    yield DecisionFrameStart()
+    async for event in _synthesize_decision_frame(
+        client, idea, transcript, collected_verdicts, tally, model,
+    ):
+        yield event

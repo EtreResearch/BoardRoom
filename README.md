@@ -109,3 +109,18 @@ Weighted: +35%  (raw: 3 GOOD / 1 BAD)
   right next to the headline.
 - **Weighted** is the signed conviction in [−100%, +100%] (sum of
   `confidence × sign` divided by maximum possible).
+
+After the tally, a one-shot synthesis call produces a **decision frame** —
+the panel's neutral one-page summary:
+
+- **Case for** — two-sentence affirmative synthesis across the GOOD voters.
+- **Case against** — two-sentence objection, surfaced honestly even if it's
+  a minority view. High-confidence dissent shows up here.
+- **Biggest unknown** — the single question whose answer would most change
+  the panel's view.
+- **Conditions for proceeding** — concrete preconditions the idea depends on.
+
+Each agent's verdict prompt also asks for their own **strongest counter-argument**
+(the "what would change your mind" steel-man), which appears in the saved
+transcript next to their vote. The synthesis call costs roughly one extra
+agent-turn (~$0.005–$0.01 on Sonnet) per run.
