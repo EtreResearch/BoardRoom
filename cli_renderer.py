@@ -170,4 +170,12 @@ async def render(
                     console.print(Text.assemble(("  • ", "bold"), c))
         elif isinstance(event, Error):
             print()
-            sys.exit(f"Anthropic API error while {event.role} was speaking: {event.message}")
+            if event.role == "(synthesizer)":
+                # Non-fatal: discussion + tally already displayed; just note
+                # the synthesis failure and let the program finish cleanly.
+                console.print(f"[red]Decision-frame error: {event.message}[/]")
+            else:
+                sys.exit(
+                    f"Anthropic API error while {event.role or 'engine'} "
+                    f"was speaking: {event.message}"
+                )

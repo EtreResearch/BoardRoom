@@ -343,7 +343,7 @@ async def _synthesize_decision_frame(
                 chunks.append(chunk)
             final_message = await stream.get_final_message()
     except APIError as e:
-        yield Error(None, f"Decision-frame synthesis failed: {e}")
+        yield Error("(synthesizer)", f"Decision-frame synthesis failed: {e}")
         return
 
     if final_message is not None and getattr(final_message, "usage", None) is not None:
