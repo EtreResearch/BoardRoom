@@ -19,6 +19,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 
 from engine import (
+    DEFAULT_VERDICT_MODE,
     Agent,
     DecisionFrame,
     DecisionFrameStart,
@@ -141,19 +142,32 @@ class TallySummary(Static):
         if self.overall is None:
             return f"[b]Tally[/]\n\n{self.good} GOOD · {self.bad} BAD"
 
-        # Finalized: stratified view.
-        color = self._headline_color(self.headline or self.overall)
+        # `--verdict simple` produces a finalized TallyComplete with an
+        # empty headline. Render the legacy count + overall rather than
+        # the stratified view it doesn't have data for.
+        if not self.headline:
+            styled = {
+                "GOOD": "[bold green]GOOD[/]",
+                "BAD": "[bold red]BAD[/]",
+                "SPLIT": "[bold yellow]SPLIT[/]",
+            }[self.overall]
+            return (
+                f"[b]Tally[/]\n\n{self.good} GOOD / {self.bad} BAD"
+                f"\n\nVerdict: {styled}"
+            )
+
+        # Finalized stratified view.
+        color = self._headline_color(self.headline)
         warning = (
             f"  [yellow]⚠ {self.strong_dissent} strong dissent[/]"
             if self.strong_dissent
             else ""
         )
-        headline = self.headline or self.overall
 
         lines = [
             "[b]Tally[/]",
             "",
-            f"[bold {color}]{headline}[/]{warning}",
+            f"[bold {color}]{self.headline}[/]{warning}",
             "",
         ]
         good_total = self.strong_good + self.lean_good + self.weak_good
@@ -327,6 +341,7 @@ class BoardRoomApp(App):
         ordered: bool = False,
         seed: int | None = None,
         no_setup: bool = False,
+        verdict_mode: str = DEFAULT_VERDICT_MODE,
     ) -> None:
         super().__init__()
         self.idea = idea
@@ -337,6 +352,7 @@ class BoardRoomApp(App):
         self.ordered = ordered
         self.seed = seed
         self.no_setup = no_setup
+        self.verdict_mode = verdict_mode
         self._buffer = ""
         self._transcript: list[Turn] = []
         self._in_verdict_round = False
@@ -400,6 +416,7 @@ class BoardRoomApp(App):
             ordered=self.ordered,
             seed=self.seed,
             consume_directive=self._consume_directive,
+            verdict_mode=self.verdict_mode,
         ):
             if isinstance(event, RoundStart):
                 self._rounds_data.append(
@@ -517,23 +534,34 @@ class BoardRoomApp(App):
                     "unclear": event.unclear,
                     "strong_dissent": event.strong_dissent,
                 }
-                headline = event.headline or event.overall
-                headline_color = (
-                    "green" if "GOOD" in headline
-                    else "red" if "BAD" in headline
-                    else "yellow"
-                )
-                warning = (
-                    f"  [yellow]⚠ {event.strong_dissent} strong dissent[/]"
-                    if event.strong_dissent
-                    else ""
-                )
-                chat.write(
-                    f"[b]Final verdict:[/] [bold {headline_color}]{headline}[/]"
-                    f"{warning}  "
-                    f"[dim]({event.good} GOOD / {event.bad} BAD · "
-                    f"weighted {event.net_score:+.0%})[/]"
-                )
+                if event.headline:
+                    headline_color = (
+                        "green" if "GOOD" in event.headline
+                        else "red" if "BAD" in event.headline
+                        else "yellow"
+                    )
+                    warning = (
+                        f"  [yellow]⚠ {event.strong_dissent} strong dissent[/]"
+                        if event.strong_dissent
+                        else ""
+                    )
+                    chat.write(
+                        f"[b]Final verdict:[/] "
+                        f"[bold {headline_color}]{event.headline}[/]"
+                        f"{warning}  "
+                        f"[dim]({event.good} GOOD / {event.bad} BAD · "
+                        f"weighted {event.net_score:+.0%})[/]"
+                    )
+                else:
+                    # `--verdict simple`: no confidence-stratified data;
+                    # fall back to the legacy line.
+                    color = {
+                        "GOOD": "green", "BAD": "red", "SPLIT": "yellow",
+                    }[event.overall]
+                    chat.write(
+                        f"[b]Final verdict:[/] [bold {color}]{event.overall}[/]"
+                        f"  [dim]({event.good} GOOD / {event.bad} BAD)[/]"
+                    )
 
             elif isinstance(event, DecisionFrameStart):
                 chat.write(Text("── Decision frame ──", style="dim"))
@@ -602,6 +630,7 @@ class BoardRoomApp(App):
                 "max_tokens": self.max_tokens,
                 "ordered": self.ordered,
                 "seed": self.seed,
+                "verdict_mode": self.verdict_mode,
             },
             "agents": [
                 {"role": a.role, "color": a.color, "system": a.system}
@@ -666,41 +695,47 @@ class BoardRoomApp(App):
 
         if self._tally is not None:
             t = self._tally
-            headline = t.get("headline") or t["overall"]
-            warning = (
-                f"  ⚠ {t['strong_dissent']} strong dissent"
-                if t.get("strong_dissent")
-                else ""
-            )
-            tally_lines = [
-                f"\n## Tally\n",
-                f"**{headline}**{warning}",
-                "",
-            ]
-            good_total = t.get("strong_good", 0) + t.get("lean_good", 0) + t.get("weak_good", 0)
-            bad_total = t.get("strong_bad", 0) + t.get("lean_bad", 0) + t.get("weak_bad", 0)
-            if good_total:
-                tally_lines.append(
-                    f"- GOOD: {t.get('strong_good', 0)} strong · "
-                    f"{t.get('lean_good', 0)} lean"
+            if not t.get("headline"):
+                # `--verdict simple`: no strata data; render legacy.
+                body.append(
+                    f"\n## Tally\n\n"
+                    f"**{t['good']} GOOD / {t['bad']} BAD → {t['overall']}**\n"
                 )
-            if bad_total:
-                tally_lines.append(
-                    f"- BAD: {t.get('strong_bad', 0)} strong · "
-                    f"{t.get('lean_bad', 0)} lean"
+            else:
+                warning = (
+                    f"  ⚠ {t['strong_dissent']} strong dissent"
+                    if t.get("strong_dissent")
+                    else ""
                 )
-            weak_total = t.get("weak_good", 0) + t.get("weak_bad", 0)
-            if weak_total:
-                tally_lines.append(f"- Weak: {weak_total}")
-            if t.get("unclear"):
-                tally_lines.append(f"- Unclear: {t['unclear']}")
-            tally_lines.append("")
-            net = t.get("net_score", 0.0)
-            tally_lines.append(
-                f"_Raw count: {t['good']} GOOD / {t['bad']} BAD · "
-                f"weighted {net:+.0%}_\n"
-            )
-            body.append("\n".join(tally_lines))
+                tally_lines = [
+                    f"\n## Tally\n",
+                    f"**{t['headline']}**{warning}",
+                    "",
+                ]
+                good_total = t.get("strong_good", 0) + t.get("lean_good", 0) + t.get("weak_good", 0)
+                bad_total = t.get("strong_bad", 0) + t.get("lean_bad", 0) + t.get("weak_bad", 0)
+                if good_total:
+                    tally_lines.append(
+                        f"- GOOD: {t.get('strong_good', 0)} strong · "
+                        f"{t.get('lean_good', 0)} lean"
+                    )
+                if bad_total:
+                    tally_lines.append(
+                        f"- BAD: {t.get('strong_bad', 0)} strong · "
+                        f"{t.get('lean_bad', 0)} lean"
+                    )
+                weak_total = t.get("weak_good", 0) + t.get("weak_bad", 0)
+                if weak_total:
+                    tally_lines.append(f"- Weak: {weak_total}")
+                if t.get("unclear"):
+                    tally_lines.append(f"- Unclear: {t['unclear']}")
+                tally_lines.append("")
+                net = t.get("net_score", 0.0)
+                tally_lines.append(
+                    f"_Raw count: {t['good']} GOOD / {t['bad']} BAD · "
+                    f"weighted {net:+.0%}_\n"
+                )
+                body.append("\n".join(tally_lines))
 
         if self._decision_frame is not None:
             df = self._decision_frame

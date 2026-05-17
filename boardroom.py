@@ -14,7 +14,13 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.rule import Rule
 
-from engine import DEFAULT_ROUNDS, load_config, run_boardroom
+from engine import (
+    DEFAULT_ROUNDS,
+    DEFAULT_VERDICT_MODE,
+    VERDICT_MODES,
+    load_config,
+    run_boardroom,
+)
 
 HIGH_ROUNDS_WARN_THRESHOLD = 10
 
@@ -74,6 +80,18 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip the TUI setup screen and use the flag values directly.",
     )
+    parser.add_argument(
+        "--verdict",
+        choices=VERDICT_MODES,
+        default=DEFAULT_VERDICT_MODE,
+        help=(
+            "Verdict round style. "
+            "decision_frame (default): per-agent confidence + steel-man + synthesized "
+            "case-for / case-against / biggest unknown / conditions. "
+            "simple: raw GOOD/BAD count, no extra synthesis call — cheaper, suited "
+            "for batch / scripted runs."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -85,6 +103,7 @@ async def _run_stdout(args, agents, model, max_tokens) -> None:
     console.print(f"[bold]Idea:[/] {args.idea}")
     console.print(
         f"[dim]Model: {model} · Rounds: {args.rounds} · "
+        f"Verdict: {args.verdict} · "
         f"Agents: {', '.join(a.role for a in agents)}[/]\n"
     )
 
@@ -99,6 +118,7 @@ async def _run_stdout(args, agents, model, max_tokens) -> None:
             max_tokens,
             ordered=args.ordered,
             seed=args.seed,
+            verdict_mode=args.verdict,
         )
         await render(events, console, agents)
     finally:
@@ -117,6 +137,7 @@ def _run_tui(args, agents, model, max_tokens) -> None:
         ordered=args.ordered,
         seed=args.seed,
         no_setup=args.no_setup,
+        verdict_mode=args.verdict,
     )
     app.run()
 

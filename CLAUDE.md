@@ -68,20 +68,29 @@ the dispatcher itself.
   the `Event` union, and handle it in **both** renderers (`cli_renderer.py`
   and `tui.py`'s `_run_discussion`). Forgetting one renderer is the most
   common refactor bug.
-- **Verdict round** asks for four structured fields per agent (`VERDICT`,
-  `CONFIDENCE: 1-5`, `REASONING`, `DISCONFIRMING`). `engine.compute_tally`
-  turns the parsed `Verdict` list into a stratified tally (strong/lean/weak
-  buckets, signed-conviction headline, strong-dissent flag). All of that
-  lives on the `TallyComplete` event so both renderers display the same
-  numbers.
-- **Decision frame**: after `TallyComplete`, the engine emits
+- **Verdict round modes** (`--verdict`): `decision_frame` (default) and
+  `simple`. The mode is plumbed from `boardroom.py` into
+  `engine.run_boardroom`'s `verdict_mode` parameter, which dispatches to
+  different verdict-prompt builders and downstream rendering paths.
+- **`decision_frame` mode** asks for four structured fields per agent
+  (`VERDICT`, `CONFIDENCE: 1-5`, `REASONING`, `DISCONFIRMING`).
+  `engine.compute_tally` turns the parsed `Verdict` list into a stratified
+  tally (strong/lean/weak buckets, signed-conviction headline,
+  strong-dissent flag). After `TallyComplete`, the engine emits
   `DecisionFrameStart` (renderers show a "Synthesizing…" indicator) and
   then makes one extra LLM call via `_synthesize_decision_frame` with a
   dedicated `SYNTHESIZER_SYSTEM` system prompt. The parsed result is
   yielded as a `DecisionFrame` event (case_for / case_against /
-  biggest_unknown / conditions). Both renderers handle both events;
-  the synthesizer's `UsageReport` flows through the cost panel like
-  any other call.
+  biggest_unknown / conditions). Both renderers handle both events; the
+  synthesizer's `UsageReport` flows through the cost panel like any
+  other call.
+- **`simple` mode** uses the original short prompt (just `VERDICT: GOOD/BAD`
+  + one sentence). The engine emits a `TallyComplete` with raw `good`/`bad`/
+  `overall` populated and all strata fields zero / empty `headline`. The
+  renderers detect the empty headline and fall back to the legacy
+  `N GOOD / M BAD → VERDICT` display. No `DecisionFrameStart` /
+  `DecisionFrame` events are emitted, so no synthesis LLM call fires —
+  this is the cheap / scriptable mode.
 - **Streaming partial output in the TUI** goes through the `Static#current`
   widget — `RichLog.write` is for fully-formed lines only. Don't write partial
   tokens to the log directly.

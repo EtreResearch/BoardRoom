@@ -105,40 +105,57 @@ async def render(
                 conf_str = f"  [dim](conf {conf}/5)[/]" if conf else ""
                 console.print(f"  {role:<16} {marker}{conf_str}")
 
-            # Stratified tally + headline + dissent flag.
-            headline = event.headline or event.overall
-            headline_styled = f"[{_headline_style(headline)}]{headline}[/]"
-            warning = (
-                f"  [yellow]⚠ {event.strong_dissent} strong dissent[/]"
-                if event.strong_dissent
-                else ""
-            )
-            console.print(f"\n  Verdict: {headline_styled}{warning}")
-
-            # Strata line: only print sides that actually have votes.
-            good_total = event.strong_good + event.lean_good + event.weak_good
-            bad_total = event.strong_bad + event.lean_bad + event.weak_bad
-            strata_parts: list[str] = []
-            if good_total:
-                strata_parts.append(
-                    f"[green]{event.strong_good} strong · {event.lean_good} lean GOOD[/]"
+            # `--verdict simple` produces a TallyComplete with an empty
+            # headline and zero strata. Fall back to the legacy display
+            # rather than rendering a confused "weighted: +0%" line.
+            if not event.headline:
+                overall_styled = {
+                    "GOOD": "[bold green]GOOD[/]",
+                    "BAD": "[bold red]BAD[/]",
+                    "SPLIT": "[bold yellow]SPLIT[/]",
+                }[event.overall]
+                console.print(
+                    f"\n  Tally: {event.good} GOOD / {event.bad} BAD  "
+                    f"→  Verdict: {overall_styled}"
                 )
-            if bad_total:
-                strata_parts.append(
-                    f"[red]{event.strong_bad} strong · {event.lean_bad} lean BAD[/]"
+            else:
+                # Stratified tally + headline + dissent flag.
+                headline_styled = (
+                    f"[{_headline_style(event.headline)}]{event.headline}[/]"
                 )
-            if event.weak_good or event.weak_bad:
-                weak = event.weak_good + event.weak_bad
-                strata_parts.append(f"[dim]{weak} weak[/]")
-            if event.unclear:
-                strata_parts.append(f"[yellow]{event.unclear} unclear[/]")
-            if strata_parts:
-                console.print("  " + "  ·  ".join(strata_parts))
+                warning = (
+                    f"  [yellow]⚠ {event.strong_dissent} strong dissent[/]"
+                    if event.strong_dissent
+                    else ""
+                )
+                console.print(f"\n  Verdict: {headline_styled}{warning}")
 
-            console.print(
-                f"  [dim]Weighted: {event.net_score:+.0%}  "
-                f"(raw: {event.good} GOOD / {event.bad} BAD)[/]"
-            )
+                # Strata line: only print sides that actually have votes.
+                good_total = event.strong_good + event.lean_good + event.weak_good
+                bad_total = event.strong_bad + event.lean_bad + event.weak_bad
+                strata_parts: list[str] = []
+                if good_total:
+                    strata_parts.append(
+                        f"[green]{event.strong_good} strong · "
+                        f"{event.lean_good} lean GOOD[/]"
+                    )
+                if bad_total:
+                    strata_parts.append(
+                        f"[red]{event.strong_bad} strong · "
+                        f"{event.lean_bad} lean BAD[/]"
+                    )
+                if event.weak_good or event.weak_bad:
+                    weak = event.weak_good + event.weak_bad
+                    strata_parts.append(f"[dim]{weak} weak[/]")
+                if event.unclear:
+                    strata_parts.append(f"[yellow]{event.unclear} unclear[/]")
+                if strata_parts:
+                    console.print("  " + "  ·  ".join(strata_parts))
+
+                console.print(
+                    f"  [dim]Weighted: {event.net_score:+.0%}  "
+                    f"(raw: {event.good} GOOD / {event.bad} BAD)[/]"
+                )
             if total_input or total_output or total_cache_read or total_cache_write:
                 total_in_all = total_input + total_cache_write + total_cache_read
                 cache_note = ""
