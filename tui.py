@@ -19,6 +19,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 
 from engine import (
+    DEFAULT_VERDICT_MODE,
     Agent,
     DecisionFrame,
     DecisionFrameStart,
@@ -340,7 +341,7 @@ class BoardRoomApp(App):
         ordered: bool = False,
         seed: int | None = None,
         no_setup: bool = False,
-        verdict_mode: str = "decision_frame",
+        verdict_mode: str = DEFAULT_VERDICT_MODE,
     ) -> None:
         super().__init__()
         self.idea = idea

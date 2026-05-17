@@ -699,9 +699,14 @@ async def run_boardroom(
 
     if use_simple:
         # Raw tally only — no strata math, no headline, no synthesis.
-        good = sum(1 for v in collected_verdicts if v.verdict == "GOOD")
-        bad = sum(1 for v in collected_verdicts if v.verdict == "BAD")
-        unclear = sum(1 for v in collected_verdicts if v.verdict not in ("GOOD", "BAD"))
+        good = bad = unclear = 0
+        for v in collected_verdicts:
+            if v.verdict == "GOOD":
+                good += 1
+            elif v.verdict == "BAD":
+                bad += 1
+            else:
+                unclear += 1
         yield TallyComplete(
             good=good,
             bad=bad,
