@@ -250,6 +250,25 @@ def format_verdict_prompt(
     )
 
 
+def format_simple_verdict_prompt(
+    idea: str,
+    transcript: list[Turn],
+    next_role: str,
+    directive: str | None = None,
+) -> str:
+    """Compact verdict prompt for `--verdict simple`: just GOOD/BAD + one sentence.
+
+    No confidence, no disconfirming, no synthesis — minimum tokens, minimum
+    cost, one-line tally suitable for batch / scripted comparison.
+    """
+    return (
+        format_transcript(idea, transcript, next_role, directive=directive)
+        + "\n\nThe discussion is complete. Give your final verdict in this exact format:\n"
+        "`VERDICT: GOOD` or `VERDICT: BAD`, followed by one sentence of reasoning.\n"
+        "Do not write anything else."
+    )
+
+
 SYNTHESIZER_SYSTEM = (
     "You are the panel's secretary. Your job is to synthesize a neutral "
     "decision frame from the executives' verdicts and the discussion that "
@@ -581,6 +600,10 @@ async def _stream_one(
         )
 
 
+VERDICT_MODES = ("decision_frame", "simple")
+DEFAULT_VERDICT_MODE = "decision_frame"
+
+
 async def run_boardroom(
     client: AsyncAnthropic,
     agents: list[Agent],
@@ -591,6 +614,7 @@ async def run_boardroom(
     ordered: bool = False,
     seed: int | None = None,
     consume_directive: Callable[[], str | None] | None = None,
+    verdict_mode: str = DEFAULT_VERDICT_MODE,
 ) -> AsyncIterator[Event]:
     """Drive the boardroom discussion.
 
@@ -599,7 +623,21 @@ async def run_boardroom(
     pending user directive string (and clear it from the caller's state)
     or None. The returned text is embedded in every agent's user message
     for that phase via `format_transcript` / `format_verdict_prompt`.
+
+    `verdict_mode` controls how the verdict round is structured:
+    - `"decision_frame"` (default): each agent gives VERDICT + CONFIDENCE +
+      REASONING + DISCONFIRMING; the engine renders a stratified tally and
+      makes one extra LLM call to synthesize a decision frame.
+    - `"simple"`: each agent gives VERDICT + one sentence of reasoning.
+      No confidence, no synthesis call. Cheaper; suited for batch /
+      scripted runs that just want one number per idea.
     """
+    if verdict_mode not in VERDICT_MODES:
+        raise ValueError(
+            f"Unknown verdict_mode: {verdict_mode!r}. "
+            f"Expected one of: {', '.join(VERDICT_MODES)}"
+        )
+
     rng = random.Random(seed)
     transcript: list[Turn] = []
 
@@ -629,8 +667,15 @@ async def run_boardroom(
     verdict_directive = _next_directive()
     yield VerdictRoundStart(directive=verdict_directive)
     collected_verdicts: list[Verdict] = []
+
+    # The verdict prompt and the per-agent Verdict shape both depend on the mode.
+    use_simple = verdict_mode == "simple"
+    prompt_builder = (
+        format_simple_verdict_prompt if use_simple else format_verdict_prompt
+    )
+
     for agent in agents:
-        user_text = format_verdict_prompt(
+        user_text = prompt_builder(
             idea, transcript, agent.role, directive=verdict_directive,
         )
         full_text = ""
@@ -642,12 +687,30 @@ async def run_boardroom(
             role=agent.role,
             verdict=parse_verdict(full_text),
             text=full_text.strip(),
-            confidence=parse_confidence(full_text),
-            reasoning=parse_reasoning(full_text),
-            disconfirming=parse_disconfirming(full_text),
+            # Simple mode doesn't ask for these and shouldn't pretend to
+            # have them. Leaving them None keeps `compute_tally`'s output
+            # in a degraded-but-honest "no strata" state.
+            confidence=None if use_simple else parse_confidence(full_text),
+            reasoning=None if use_simple else parse_reasoning(full_text),
+            disconfirming=None if use_simple else parse_disconfirming(full_text),
         )
         collected_verdicts.append(v)
         yield v
+
+    if use_simple:
+        # Raw tally only — no strata math, no headline, no synthesis.
+        good = sum(1 for v in collected_verdicts if v.verdict == "GOOD")
+        bad = sum(1 for v in collected_verdicts if v.verdict == "BAD")
+        unclear = sum(1 for v in collected_verdicts if v.verdict not in ("GOOD", "BAD"))
+        yield TallyComplete(
+            good=good,
+            bad=bad,
+            overall=overall_verdict(good, bad),
+            unclear=unclear,
+            # All other strata fields default to 0 / "" — renderers detect this
+            # via empty `headline` and fall back to the legacy display.
+        )
+        return
 
     tally = TallyComplete(**compute_tally(collected_verdicts))
     yield tally
