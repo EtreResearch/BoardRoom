@@ -13,13 +13,18 @@ from rich.console import Console
 from rich.rule import Rule
 from rich.text import Text
 
+from rich.table import Table
+
 from engine import (
+    SCORECARD_DIMENSIONS,
     Agent,
     DecisionFrame,
     DecisionFrameStart,
     Error,
     Event,
     RoundStart,
+    ScoreReport,
+    ScorecardComplete,
     TallyComplete,
     Token,
     TurnEnd,
@@ -55,6 +60,7 @@ async def render(
     # Capture each agent's (verdict, confidence, reasoning) so the per-agent
     # block can show the confidence number alongside the vote.
     verdicts: dict[str, tuple[str, int | None, str | None]] = {}
+    score_reports: list[ScoreReport] = []
     total_input = 0
     total_output = 0
     total_cache_write = 0
@@ -86,6 +92,44 @@ async def render(
             print("\n")
         elif isinstance(event, Verdict):
             verdicts[event.role] = (event.verdict, event.confidence, event.reasoning)
+        elif isinstance(event, ScoreReport):
+            score_reports.append(event)
+        elif isinstance(event, ScorecardComplete):
+            console.print(Rule("Scorecard", style="dim"))
+            table = Table(show_header=True, header_style="bold")
+            table.add_column("Agent", style="bold")
+            for dim in SCORECARD_DIMENSIONS:
+                table.add_column(dim.title(), justify="right")
+            for sr in event.by_agent:
+                color = _color_for(sr.role, agents)
+                table.add_row(
+                    f"[{color}]{sr.role}[/]",
+                    *(
+                        "—" if sr.scores.get(dim) is None else str(sr.scores[dim])
+                        for dim in SCORECARD_DIMENSIONS
+                    ),
+                )
+            table.add_section()
+            table.add_row(
+                "[bold]Average[/]",
+                *(f"{event.averages[dim]:.1f}" for dim in SCORECARD_DIMENSIONS),
+            )
+            console.print(table)
+            console.print(
+                f"  [bold]Composite:[/] {event.composite:.2f} / 5"
+            )
+            if total_input or total_output or total_cache_read or total_cache_write:
+                total_in_all = total_input + total_cache_write + total_cache_read
+                cache_note = ""
+                if total_cache_read or total_cache_write:
+                    cache_note = (
+                        f"  [dim](cache: {total_cache_write:,} w · "
+                        f"{total_cache_read:,} r)[/]"
+                    )
+                console.print(
+                    f"\n  Usage: {total_in_all:,} in · {total_output:,} out"
+                    f"  [dim]~${total_cost:.4f}[/]{cache_note}"
+                )
         elif isinstance(event, UsageReport):
             total_input += event.input_tokens
             total_output += event.output_tokens

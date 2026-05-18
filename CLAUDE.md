@@ -68,10 +68,12 @@ the dispatcher itself.
   the `Event` union, and handle it in **both** renderers (`cli_renderer.py`
   and `tui.py`'s `_run_discussion`). Forgetting one renderer is the most
   common refactor bug.
-- **Verdict round modes** (`--verdict`): `decision_frame` (default) and
-  `simple`. The mode is plumbed from `boardroom.py` into
-  `engine.run_boardroom`'s `verdict_mode` parameter, which dispatches to
-  different verdict-prompt builders and downstream rendering paths.
+- **Verdict round modes** (`--verdict`): `decision_frame` (default),
+  `simple`, and `scorecard`. The mode is plumbed from `boardroom.py`
+  into `engine.run_boardroom`'s `verdict_mode` parameter, which
+  dispatches to different verdict-prompt builders, per-agent event
+  types, and downstream rendering paths. The canonical list lives in
+  `engine.VERDICT_MODES`.
 - **`decision_frame` mode** asks for four structured fields per agent
   (`VERDICT`, `CONFIDENCE: 1-5`, `REASONING`, `DISCONFIRMING`).
   `engine.compute_tally` turns the parsed `Verdict` list into a stratified
@@ -91,6 +93,15 @@ the dispatcher itself.
   `N GOOD / M BAD → VERDICT` display. No `DecisionFrameStart` /
   `DecisionFrame` events are emitted, so no synthesis LLM call fires —
   this is the cheap / scriptable mode.
+- **`scorecard` mode** asks each agent for a 1-5 rating across four
+  dimensions (`MARKET`, `TECH`, `UX`, `RISK`, all framed so higher = better
+  including `RISK`). Per-agent results are emitted as `ScoreReport` events
+  (one per agent) followed by a single `ScorecardComplete` with
+  per-dimension averages and a composite. `Verdict` / `TallyComplete` /
+  `DecisionFrame*` events are **not** emitted in this mode. Both
+  renderers display a Rich `Table` (a real `rich.table.Table` rendered
+  to stdout / to RichLog). The sidebar `TallySummary` widget stays at
+  its placeholder — it's GOOD/BAD-specific.
 - **Streaming partial output in the TUI** goes through the `Static#current`
   widget — `RichLog.write` is for fully-formed lines only. Don't write partial
   tokens to the log directly.
