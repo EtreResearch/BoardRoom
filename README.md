@@ -30,11 +30,15 @@ Optional flags:
 - `--ordered` — speak in YAML order every round instead of shuffling.
 - `--seed N` — seed the per-round shuffle for reproducibility.
 - `--no-setup` — skip the TUI setup screen (use the flag values directly).
-- `--verdict {decision_frame,simple}` — verdict-round style. Default is
-  `decision_frame` (confidence + steel-man + synthesized case-for/against).
-  `simple` reverts to the original `N GOOD / M BAD → VERDICT` tally with no
-  confidence collection and no synthesis call — useful for batch / scripted
-  runs that want one number per idea at minimum cost.
+- `--verdict {decision_frame,simple,scorecard}` — verdict-round style.
+  Default is `decision_frame` (confidence + steel-man + synthesized
+  case-for/against). `simple` reverts to the original `N GOOD / M BAD →
+  VERDICT` tally with no confidence collection and no synthesis call —
+  useful for batch / scripted runs that want one number per idea at
+  minimum cost. `scorecard` swaps the GOOD/BAD vote for a per-dimension
+  1-5 rating across Market, Tech, UX, and Risk, plus per-dimension
+  averages and a composite score — useful when you want quantitative
+  comparison across multiple ideas.
 
 ## TUI mode
 

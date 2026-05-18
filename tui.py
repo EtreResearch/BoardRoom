@@ -18,13 +18,18 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 
+from rich.table import Table
+
 from engine import (
     DEFAULT_VERDICT_MODE,
+    SCORECARD_DIMENSIONS,
     Agent,
     DecisionFrame,
     DecisionFrameStart,
     Error,
     RoundStart,
+    ScoreReport,
+    ScorecardComplete,
     TallyComplete,
     Token,
     Turn,
@@ -44,6 +49,7 @@ STATUS_LABELS = {
     "voted_good": "[green]voted GOOD[/]",
     "voted_bad": "[red]voted BAD[/]",
     "voted_unclear": "[yellow]voted ?[/]",
+    "scored": "[cyan]scored[/]",
 }
 
 
@@ -362,6 +368,7 @@ class BoardRoomApp(App):
         self._verdicts: list[dict] = []             # [{role, verdict, confidence, reasoning, disconfirming}]
         self._tally: dict | None = None              # {good, bad, overall, ...strata}
         self._decision_frame: dict | None = None     # {case_for, case_against, biggest_unknown, conditions}
+        self._scorecard: dict | None = None           # {by_agent, averages, composite}
         self._verdict_directive: str | None = None   # directive applied to the verdict round
         # Interjection state.
         self._pending_directive: str | None = None
@@ -517,6 +524,47 @@ class BoardRoomApp(App):
                     }
                 )
 
+            elif isinstance(event, ScoreReport):
+                roster.update_status(event.role, "scored")
+
+            elif isinstance(event, ScorecardComplete):
+                # Capture for the saved transcript.
+                self._scorecard = {
+                    "by_agent": [
+                        {
+                            "role": sr.role,
+                            "scores": dict(sr.scores),
+                            "notes": dict(sr.notes),
+                        }
+                        for sr in event.by_agent
+                    ],
+                    "averages": dict(event.averages),
+                    "composite": event.composite,
+                }
+                chat.write(Text("── Scorecard ──", style="dim"))
+                table = Table(show_header=True, header_style="bold")
+                table.add_column("Agent", style="bold")
+                for dim in SCORECARD_DIMENSIONS:
+                    table.add_column(dim.title(), justify="right")
+                for sr in event.by_agent:
+                    color = self._color(sr.role)
+                    table.add_row(
+                        f"[{color}]{sr.role}[/]",
+                        *(
+                            "—" if sr.scores.get(dim) is None else str(sr.scores[dim])
+                            for dim in SCORECARD_DIMENSIONS
+                        ),
+                    )
+                table.add_section()
+                table.add_row(
+                    "[bold]Average[/]",
+                    *(f"{event.averages[dim]:.1f}" for dim in SCORECARD_DIMENSIONS),
+                )
+                chat.write(table)
+                chat.write(
+                    f"[b]Composite:[/] [bold cyan]{event.composite:.2f}[/] / 5"
+                )
+
             elif isinstance(event, TallyComplete):
                 tally.finalize(event)
                 self._tally = {
@@ -641,6 +689,7 @@ class BoardRoomApp(App):
             "verdicts": self._verdicts,
             "tally": self._tally,
             "decision_frame": self._decision_frame,
+            "scorecard": self._scorecard,
             "usage": {
                 "input_tokens": usage.total_input,
                 "output_tokens": usage.total_output,
@@ -736,6 +785,36 @@ class BoardRoomApp(App):
                     f"weighted {net:+.0%}_\n"
                 )
                 body.append("\n".join(tally_lines))
+
+        if self._scorecard is not None:
+            sc = self._scorecard
+            sc_lines = ["\n## Scorecard\n"]
+            # Header row.
+            header = "| Agent | " + " | ".join(d.title() for d in SCORECARD_DIMENSIONS) + " |"
+            sep = "|---|" + "|".join("---:" for _ in SCORECARD_DIMENSIONS) + "|"
+            sc_lines += [header, sep]
+            for entry in sc["by_agent"]:
+                row_vals = [
+                    "—" if entry["scores"].get(dim) is None else str(entry["scores"][dim])
+                    for dim in SCORECARD_DIMENSIONS
+                ]
+                sc_lines.append(f"| **{entry['role']}** | " + " | ".join(row_vals) + " |")
+            # Averages row.
+            avg_vals = [f"{sc['averages'][dim]:.1f}" for dim in SCORECARD_DIMENSIONS]
+            sc_lines.append(f"| **Average** | " + " | ".join(avg_vals) + " |")
+            sc_lines.append(f"\n**Composite:** {sc['composite']:.2f} / 5\n")
+            # Per-agent notes for context.
+            sc_lines.append("\n### Notes\n")
+            for entry in sc["by_agent"]:
+                sc_lines.append(f"- **{entry['role']}**")
+                for dim in SCORECARD_DIMENSIONS:
+                    note = entry["notes"].get(dim) or ""
+                    score = entry["scores"].get(dim)
+                    score_str = "—" if score is None else str(score)
+                    if note:
+                        sc_lines.append(f"  - *{dim.title()}* ({score_str}): {note}")
+            sc_lines.append("")
+            body.append("\n".join(sc_lines))
 
         if self._decision_frame is not None:
             df = self._decision_frame

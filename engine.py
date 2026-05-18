@@ -151,6 +151,23 @@ class UsageReport:
 
 
 @dataclass
+class ScoreReport:
+    """One agent's per-dimension scorecard (verdict_mode='scorecard')."""
+    role: str
+    scores: dict[str, int | None]   # {"MARKET": 4, "TECH": None, ...}
+    notes: dict[str, str]            # {"MARKET": "the one-sentence note", ...}
+    text: str                        # raw response
+
+
+@dataclass
+class ScorecardComplete:
+    """Aggregated scorecard across all agents."""
+    by_agent: list[ScoreReport]
+    averages: dict[str, float]   # per-dimension mean across agents with that score
+    composite: float              # mean of the four dimension averages
+
+
+@dataclass
 class Error:
     role: str | None
     message: str
@@ -166,6 +183,8 @@ Event = (
     | TallyComplete
     | DecisionFrameStart
     | DecisionFrame
+    | ScoreReport
+    | ScorecardComplete
     | UsageReport
     | Error
 )
@@ -248,6 +267,63 @@ def format_verdict_prompt(
         " One sentence.\n"
         "- Output nothing else — no preamble, no markdown."
     )
+
+
+def format_scorecard_prompt(
+    idea: str,
+    transcript: list[Turn],
+    next_role: str,
+    directive: str | None = None,
+) -> str:
+    """Scorecard verdict prompt for `--verdict scorecard`.
+
+    Asks for 1-5 ratings across four dimensions with one-sentence
+    justifications. RISK is framed "higher = safer" so all dimensions point
+    the same direction and per-dimension averaging is coherent.
+    """
+    return (
+        format_transcript(idea, transcript, next_role, directive=directive)
+        + "\n\nThe discussion is complete. Score this idea on four dimensions"
+        " using EXACTLY this format:\n"
+        "\n"
+        "MARKET: 4 - One sentence on market opportunity / timing (higher = bigger market or better timing).\n"
+        "TECH: 3 - One sentence on technical feasibility (higher = more feasible / less build risk).\n"
+        "UX: 4 - One sentence on user value clarity (higher = clearer value to the user).\n"
+        "RISK: 2 - One sentence on risk profile (higher = better controlled / safer).\n"
+        "\n"
+        "Rules:\n"
+        "- Each score is an integer 1-5.\n"
+        "- Each line is exactly: <DIMENSION>: <score> - <one sentence>\n"
+        "- Use the dimension keywords MARKET, TECH, UX, RISK in that order.\n"
+        "- Output exactly four lines. No preamble, no closing remarks."
+    )
+
+
+def parse_scorecard(text: str) -> tuple[dict[str, int | None], dict[str, str]]:
+    """Parse a scorecard response. Returns (scores, notes), keyed by dimension.
+
+    Missing dimensions get `None` (scores) or `""` (notes). Unparseable
+    output → all dimensions empty/None; the caller treats that as a
+    degraded-but-honest result.
+    """
+    scores: dict[str, int | None] = {d: None for d in SCORECARD_DIMENSIONS}
+    notes: dict[str, str] = {d: "" for d in SCORECARD_DIMENSIONS}
+    for m in SCORECARD_LINE_RE.finditer(text):
+        dim = m.group(1).upper()
+        scores[dim] = int(m.group(2))
+        notes[dim] = m.group(3).strip()
+    return scores, notes
+
+
+def compute_scorecard_complete(reports: list["ScoreReport"]) -> "ScorecardComplete":
+    """Average each dimension across agents (skipping None) and the composite."""
+    averages: dict[str, float] = {}
+    for dim in SCORECARD_DIMENSIONS:
+        values = [r.scores[dim] for r in reports if r.scores.get(dim) is not None]
+        averages[dim] = round(sum(values) / len(values), 2) if values else 0.0
+    nonzero = [v for v in averages.values() if v > 0]
+    composite = round(sum(nonzero) / len(nonzero), 2) if nonzero else 0.0
+    return ScorecardComplete(by_agent=list(reports), averages=averages, composite=composite)
 
 
 def format_simple_verdict_prompt(
@@ -600,8 +676,14 @@ async def _stream_one(
         )
 
 
-VERDICT_MODES = ("decision_frame", "simple")
+VERDICT_MODES = ("decision_frame", "simple", "scorecard")
 DEFAULT_VERDICT_MODE = "decision_frame"
+
+SCORECARD_DIMENSIONS = ("MARKET", "TECH", "UX", "RISK")
+SCORECARD_LINE_RE = re.compile(
+    r"(MARKET|TECH|UX|RISK):\s*([1-5])\s*[-—:]\s*(.+?)(?=\n\s*[A-Z]+:|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 async def run_boardroom(
@@ -666,6 +748,33 @@ async def run_boardroom(
 
     verdict_directive = _next_directive()
     yield VerdictRoundStart(directive=verdict_directive)
+
+    # Scorecard mode has a different per-agent shape (no GOOD/BAD vote) so
+    # it gets its own path. The decision_frame and simple modes both produce
+    # Verdict events and share the per-agent loop below.
+    if verdict_mode == "scorecard":
+        score_reports: list[ScoreReport] = []
+        for agent in agents:
+            user_text = format_scorecard_prompt(
+                idea, transcript, agent.role, directive=verdict_directive,
+            )
+            full_text = ""
+            async for event in _stream_one(client, agent, user_text, model, max_tokens):
+                if isinstance(event, TurnEnd):
+                    full_text = event.full_text
+                yield event
+            scores, notes = parse_scorecard(full_text)
+            sr = ScoreReport(
+                role=agent.role,
+                scores=scores,
+                notes=notes,
+                text=full_text.strip(),
+            )
+            score_reports.append(sr)
+            yield sr
+        yield compute_scorecard_complete(score_reports)
+        return
+
     collected_verdicts: list[Verdict] = []
 
     # The verdict prompt and the per-agent Verdict shape both depend on the mode.
