@@ -23,10 +23,8 @@ from engine import (
     DecisionFrameStart,
     Error,
     Event,
-    RecommendationReport,
     RecommendationsComplete,
     RoundStart,
-    ScoreReport,
     ScorecardComplete,
     TallyComplete,
     Token,
@@ -46,6 +44,36 @@ def _color_for(role: str, agents: list[Agent]) -> str:
     return "white"
 
 
+def _print_usage_summary(
+    console: Console,
+    *,
+    total_input: int,
+    total_output: int,
+    total_cache_write: int,
+    total_cache_read: int,
+    total_cost: float,
+) -> None:
+    """Print the run's running token + cost summary, if any tokens were used.
+
+    The verdict-mode endings (TallyComplete / ScorecardComplete /
+    RecommendationsComplete) all print the same summary; this is the
+    single place that knows how.
+    """
+    if not (total_input or total_output or total_cache_read or total_cache_write):
+        return
+    total_in_all = total_input + total_cache_write + total_cache_read
+    cache_note = ""
+    if total_cache_read or total_cache_write:
+        cache_note = (
+            f"  [dim](cache: {total_cache_write:,} w · "
+            f"{total_cache_read:,} r)[/]"
+        )
+    console.print(
+        f"\n  Usage: {total_in_all:,} in · {total_output:,} out"
+        f"  [dim]~${total_cost:.4f}[/]{cache_note}"
+    )
+
+
 def _headline_style(headline: str) -> str:
     if "GOOD" in headline:
         return "bold green"
@@ -63,8 +91,6 @@ async def render(
     # Capture each agent's (verdict, confidence, reasoning) so the per-agent
     # block can show the confidence number alongside the vote.
     verdicts: dict[str, tuple[str, int | None, str | None]] = {}
-    score_reports: list[ScoreReport] = []
-    recommendation_reports: list[RecommendationReport] = []
     total_input = 0
     total_output = 0
     total_cache_write = 0
@@ -96,8 +122,6 @@ async def render(
             print("\n")
         elif isinstance(event, Verdict):
             verdicts[event.role] = (event.verdict, event.confidence, event.reasoning)
-        elif isinstance(event, ScoreReport):
-            score_reports.append(event)
         elif isinstance(event, ScorecardComplete):
             console.print(Rule("Scorecard", style="dim"))
             table = Table(show_header=True, header_style="bold")
@@ -122,20 +146,14 @@ async def render(
             console.print(
                 f"  [bold]Composite:[/] {event.composite:.2f} / 5"
             )
-            if total_input or total_output or total_cache_read or total_cache_write:
-                total_in_all = total_input + total_cache_write + total_cache_read
-                cache_note = ""
-                if total_cache_read or total_cache_write:
-                    cache_note = (
-                        f"  [dim](cache: {total_cache_write:,} w · "
-                        f"{total_cache_read:,} r)[/]"
-                    )
-                console.print(
-                    f"\n  Usage: {total_in_all:,} in · {total_output:,} out"
-                    f"  [dim]~${total_cost:.4f}[/]{cache_note}"
-                )
-        elif isinstance(event, RecommendationReport):
-            recommendation_reports.append(event)
+            _print_usage_summary(
+                console,
+                total_input=total_input,
+                total_output=total_output,
+                total_cache_write=total_cache_write,
+                total_cache_read=total_cache_read,
+                total_cost=total_cost,
+            )
         elif isinstance(event, RecommendationsComplete):
             console.print(Rule("Recommendations", style="dim"))
             action_color = {
@@ -165,18 +183,14 @@ async def render(
             if event.counts.get("UNCLEAR"):
                 count_parts.append(f"[dim]{event.counts['UNCLEAR']} unclear[/]")
             console.print("\n  Counts:  " + " · ".join(count_parts))
-            if total_input or total_output or total_cache_read or total_cache_write:
-                total_in_all = total_input + total_cache_write + total_cache_read
-                cache_note = ""
-                if total_cache_read or total_cache_write:
-                    cache_note = (
-                        f"  [dim](cache: {total_cache_write:,} w · "
-                        f"{total_cache_read:,} r)[/]"
-                    )
-                console.print(
-                    f"\n  Usage: {total_in_all:,} in · {total_output:,} out"
-                    f"  [dim]~${total_cost:.4f}[/]{cache_note}"
-                )
+            _print_usage_summary(
+                console,
+                total_input=total_input,
+                total_output=total_output,
+                total_cache_write=total_cache_write,
+                total_cache_read=total_cache_read,
+                total_cost=total_cost,
+            )
         elif isinstance(event, UsageReport):
             total_input += event.input_tokens
             total_output += event.output_tokens
@@ -247,18 +261,14 @@ async def render(
                     f"  [dim]Weighted: {event.net_score:+.0%}  "
                     f"(raw: {event.good} GOOD / {event.bad} BAD)[/]"
                 )
-            if total_input or total_output or total_cache_read or total_cache_write:
-                total_in_all = total_input + total_cache_write + total_cache_read
-                cache_note = ""
-                if total_cache_read or total_cache_write:
-                    cache_note = (
-                        f"  [dim](cache: {total_cache_write:,} w · "
-                        f"{total_cache_read:,} r)[/]"
-                    )
-                console.print(
-                    f"\n  Usage: {total_in_all:,} in · {total_output:,} out"
-                    f"  [dim]~${total_cost:.4f}[/]{cache_note}"
-                )
+            _print_usage_summary(
+                console,
+                total_input=total_input,
+                total_output=total_output,
+                total_cache_write=total_cache_write,
+                total_cache_read=total_cache_read,
+                total_cost=total_cost,
+            )
         elif isinstance(event, DecisionFrameStart):
             console.print(Rule("Decision frame", style="dim"))
             console.print("[dim italic]Synthesizing…[/]")
