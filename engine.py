@@ -168,6 +168,22 @@ class ScorecardComplete:
 
 
 @dataclass
+class RecommendationReport:
+    """One agent's recommendation (verdict_mode='recommendation')."""
+    role: str
+    action: str  # "PROCEED" | "PAUSE" | "PIVOT" | "KILL" | "UNCLEAR"
+    reasoning: str | None
+    text: str    # raw response
+
+
+@dataclass
+class RecommendationsComplete:
+    """Aggregated recommendations across all agents."""
+    by_agent: list[RecommendationReport]
+    counts: dict[str, int]  # {PROCEED, PAUSE, PIVOT, KILL, UNCLEAR}
+
+
+@dataclass
 class Error:
     role: str | None
     message: str
@@ -185,6 +201,8 @@ Event = (
     | DecisionFrame
     | ScoreReport
     | ScorecardComplete
+    | RecommendationReport
+    | RecommendationsComplete
     | UsageReport
     | Error
 )
@@ -324,6 +342,46 @@ def compute_scorecard_complete(reports: list["ScoreReport"]) -> "ScorecardComple
     nonzero = [v for v in averages.values() if v > 0]
     composite = round(sum(nonzero) / len(nonzero), 2) if nonzero else 0.0
     return ScorecardComplete(by_agent=list(reports), averages=averages, composite=composite)
+
+
+def format_recommendation_prompt(
+    idea: str,
+    transcript: list[Turn],
+    next_role: str,
+    directive: str | None = None,
+) -> str:
+    """Recommendation verdict prompt for `--verdict recommendation`.
+
+    Asks for an ACTION (PROCEED / PAUSE / PIVOT / KILL) plus a 2-3 sentence
+    rationale. Useful when the question isn't "is this good" but "what
+    should we do" — the four actions cover the realistic decision space.
+    """
+    return (
+        format_transcript(idea, transcript, next_role, directive=directive)
+        + "\n\nThe discussion is complete. Give your recommendation in this exact format:\n"
+        "\n"
+        "ACTION: PROCEED\n"
+        "REASONING: Two-to-three sentence recommendation. Explain what to do and why.\n"
+        "\n"
+        "Rules:\n"
+        "- ACTION must be exactly one of: PROCEED, PAUSE, PIVOT, KILL.\n"
+        "- REASONING is two to three sentences.\n"
+        "- Output nothing else — no preamble, no markdown."
+    )
+
+
+def compute_recommendations_complete(
+    reports: list["RecommendationReport"],
+) -> "RecommendationsComplete":
+    """Count actions across agents; UNCLEAR captures unparseable responses."""
+    counts: dict[str, int] = {a: 0 for a in RECOMMENDATION_ACTIONS}
+    counts["UNCLEAR"] = 0
+    for r in reports:
+        if r.action in counts:
+            counts[r.action] += 1
+        else:
+            counts["UNCLEAR"] += 1
+    return RecommendationsComplete(by_agent=list(reports), counts=counts)
 
 
 def format_simple_verdict_prompt(
@@ -473,6 +531,12 @@ def parse_reasoning(text: str) -> str | None:
         return None
     reasoning = match.group(1).strip()
     return reasoning or None
+
+
+def parse_action(text: str) -> str:
+    """Parse `ACTION: <PROCEED|PAUSE|PIVOT|KILL>`. Unparseable → 'UNCLEAR'."""
+    m = ACTION_RE.search(text)
+    return m.group(1).upper() if m else "UNCLEAR"
 
 
 def parse_disconfirming(text: str) -> str | None:
@@ -676,13 +740,18 @@ async def _stream_one(
         )
 
 
-VERDICT_MODES = ("decision_frame", "simple", "scorecard")
+VERDICT_MODES = ("decision_frame", "simple", "scorecard", "recommendation")
 DEFAULT_VERDICT_MODE = "decision_frame"
 
 SCORECARD_DIMENSIONS = ("MARKET", "TECH", "UX", "RISK")
 SCORECARD_LINE_RE = re.compile(
     r"(MARKET|TECH|UX|RISK):\s*([1-5])\s*[-—:]\s*(.+?)(?=\n\s*[A-Z]+:|\Z)",
     re.IGNORECASE | re.DOTALL,
+)
+
+RECOMMENDATION_ACTIONS = ("PROCEED", "PAUSE", "PIVOT", "KILL")
+ACTION_RE = re.compile(
+    r"ACTION:\s*(PROCEED|PAUSE|PIVOT|KILL)", re.IGNORECASE
 )
 
 
@@ -749,9 +818,10 @@ async def run_boardroom(
     verdict_directive = _next_directive()
     yield VerdictRoundStart(directive=verdict_directive)
 
-    # Scorecard mode has a different per-agent shape (no GOOD/BAD vote) so
-    # it gets its own path. The decision_frame and simple modes both produce
-    # Verdict events and share the per-agent loop below.
+    # Scorecard and recommendation modes have different per-agent shapes
+    # (no GOOD/BAD vote) so they get their own paths. The decision_frame
+    # and simple modes both produce Verdict events and share the per-agent
+    # loop below.
     if verdict_mode == "scorecard":
         score_reports: list[ScoreReport] = []
         for agent in agents:
@@ -773,6 +843,28 @@ async def run_boardroom(
             score_reports.append(sr)
             yield sr
         yield compute_scorecard_complete(score_reports)
+        return
+
+    if verdict_mode == "recommendation":
+        rec_reports: list[RecommendationReport] = []
+        for agent in agents:
+            user_text = format_recommendation_prompt(
+                idea, transcript, agent.role, directive=verdict_directive,
+            )
+            full_text = ""
+            async for event in _stream_one(client, agent, user_text, model, max_tokens):
+                if isinstance(event, TurnEnd):
+                    full_text = event.full_text
+                yield event
+            rr = RecommendationReport(
+                role=agent.role,
+                action=parse_action(full_text),
+                reasoning=parse_reasoning(full_text),
+                text=full_text.strip(),
+            )
+            rec_reports.append(rr)
+            yield rr
+        yield compute_recommendations_complete(rec_reports)
         return
 
     collected_verdicts: list[Verdict] = []

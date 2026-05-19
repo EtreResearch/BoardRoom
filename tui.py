@@ -22,11 +22,14 @@ from rich.table import Table
 
 from engine import (
     DEFAULT_VERDICT_MODE,
+    RECOMMENDATION_ACTIONS,
     SCORECARD_DIMENSIONS,
     Agent,
     DecisionFrame,
     DecisionFrameStart,
     Error,
+    RecommendationReport,
+    RecommendationsComplete,
     RoundStart,
     ScoreReport,
     ScorecardComplete,
@@ -50,6 +53,11 @@ STATUS_LABELS = {
     "voted_bad": "[red]voted BAD[/]",
     "voted_unclear": "[yellow]voted ?[/]",
     "scored": "[cyan]scored[/]",
+    "rec_proceed": "[green]proceed[/]",
+    "rec_pause": "[yellow]pause[/]",
+    "rec_pivot": "[cyan]pivot[/]",
+    "rec_kill": "[red]kill[/]",
+    "rec_unclear": "[dim]?[/]",
 }
 
 
@@ -369,6 +377,7 @@ class BoardRoomApp(App):
         self._tally: dict | None = None              # {good, bad, overall, ...strata}
         self._decision_frame: dict | None = None     # {case_for, case_against, biggest_unknown, conditions}
         self._scorecard: dict | None = None           # {by_agent, averages, composite}
+        self._recommendations: dict | None = None      # {by_agent, counts}
         self._verdict_directive: str | None = None   # directive applied to the verdict round
         # Interjection state.
         self._pending_directive: str | None = None
@@ -565,6 +574,64 @@ class BoardRoomApp(App):
                     f"[b]Composite:[/] [bold cyan]{event.composite:.2f}[/] / 5"
                 )
 
+            elif isinstance(event, RecommendationReport):
+                status_map = {
+                    "PROCEED": "rec_proceed",
+                    "PAUSE": "rec_pause",
+                    "PIVOT": "rec_pivot",
+                    "KILL": "rec_kill",
+                }
+                roster.update_status(
+                    event.role, status_map.get(event.action, "rec_unclear")
+                )
+
+            elif isinstance(event, RecommendationsComplete):
+                # Capture for the saved transcript.
+                self._recommendations = {
+                    "by_agent": [
+                        {
+                            "role": rr.role,
+                            "action": rr.action,
+                            "reasoning": rr.reasoning or "",
+                        }
+                        for rr in event.by_agent
+                    ],
+                    "counts": dict(event.counts),
+                }
+                chat.write(Text("── Recommendations ──", style="dim"))
+                action_color = {
+                    "PROCEED": "green",
+                    "PAUSE": "yellow",
+                    "PIVOT": "cyan",
+                    "KILL": "red",
+                    "UNCLEAR": "dim",
+                }
+                max_role = max(
+                    (len(rr.role) for rr in event.by_agent), default=8
+                )
+                for rr in event.by_agent:
+                    role_color = self._color(rr.role)
+                    act_color = action_color.get(rr.action, "white")
+                    reason = rr.reasoning or "(no reasoning)"
+                    chat.write(
+                        f"  [{role_color}]{rr.role:<{max_role}}[/]  "
+                        f"[bold {act_color}]{rr.action:<7}[/]  {reason}"
+                    )
+                count_parts = []
+                for action in RECOMMENDATION_ACTIONS:
+                    c = event.counts.get(action, 0)
+                    if c:
+                        count_parts.append(
+                            f"[{action_color[action]}]{c} {action}[/]"
+                        )
+                    else:
+                        count_parts.append(f"[dim]0 {action}[/]")
+                if event.counts.get("UNCLEAR"):
+                    count_parts.append(
+                        f"[dim]{event.counts['UNCLEAR']} unclear[/]"
+                    )
+                chat.write("\n[b]Counts:[/]  " + " · ".join(count_parts))
+
             elif isinstance(event, TallyComplete):
                 tally.finalize(event)
                 self._tally = {
@@ -690,6 +757,7 @@ class BoardRoomApp(App):
             "tally": self._tally,
             "decision_frame": self._decision_frame,
             "scorecard": self._scorecard,
+            "recommendations": self._recommendations,
             "usage": {
                 "input_tokens": usage.total_input,
                 "output_tokens": usage.total_output,
@@ -815,6 +883,23 @@ class BoardRoomApp(App):
                         sc_lines.append(f"  - *{dim.title()}* ({score_str}): {note}")
             sc_lines.append("")
             body.append("\n".join(sc_lines))
+
+        if self._recommendations is not None:
+            rec = self._recommendations
+            rec_lines = ["\n## Recommendations\n"]
+            for entry in rec["by_agent"]:
+                reason = entry.get("reasoning") or "(no reasoning)"
+                rec_lines.append(
+                    f"- **{entry['role']}** — **{entry['action']}** — _{reason}_"
+                )
+            count_parts = []
+            for action in RECOMMENDATION_ACTIONS:
+                count_parts.append(f"{rec['counts'].get(action, 0)} {action}")
+            if rec["counts"].get("UNCLEAR"):
+                count_parts.append(f"{rec['counts']['UNCLEAR']} unclear")
+            rec_lines.append("")
+            rec_lines.append(f"**Counts:** {' · '.join(count_parts)}\n")
+            body.append("\n".join(rec_lines))
 
         if self._decision_frame is not None:
             df = self._decision_frame
