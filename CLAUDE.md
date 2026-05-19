@@ -69,9 +69,9 @@ the dispatcher itself.
   and `tui.py`'s `_run_discussion`). Forgetting one renderer is the most
   common refactor bug.
 - **Verdict round modes** (`--verdict`): `decision_frame` (default),
-  `simple`, and `scorecard`. The mode is plumbed from `boardroom.py`
-  into `engine.run_boardroom`'s `verdict_mode` parameter, which
-  dispatches to different verdict-prompt builders, per-agent event
+  `simple`, `scorecard`, and `recommendation`. The mode is plumbed from
+  `boardroom.py` into `engine.run_boardroom`'s `verdict_mode` parameter,
+  which dispatches to different verdict-prompt builders, per-agent event
   types, and downstream rendering paths. The canonical list lives in
   `engine.VERDICT_MODES`.
 - **`decision_frame` mode** asks for four structured fields per agent
@@ -102,6 +102,13 @@ the dispatcher itself.
   renderers display a Rich `Table` (a real `rich.table.Table` rendered
   to stdout / to RichLog). The sidebar `TallySummary` widget stays at
   its placeholder — it's GOOD/BAD-specific.
+- **`recommendation` mode** asks each agent for an `ACTION` (one of
+  `PROCEED`, `PAUSE`, `PIVOT`, `KILL`) plus a 2-3 sentence rationale.
+  Per-agent results are emitted as `RecommendationReport` events
+  followed by a single `RecommendationsComplete` carrying action counts.
+  As with `scorecard`, no `Verdict` / `TallyComplete` / `DecisionFrame*`
+  events fire and the sidebar `TallySummary` stays at its placeholder.
+  Renderers show a per-agent list + a counts summary.
 - **Streaming partial output in the TUI** goes through the `Static#current`
   widget — `RichLog.write` is for fully-formed lines only. Don't write partial
   tokens to the log directly.

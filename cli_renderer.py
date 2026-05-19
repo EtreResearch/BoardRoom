@@ -16,12 +16,15 @@ from rich.text import Text
 from rich.table import Table
 
 from engine import (
+    RECOMMENDATION_ACTIONS,
     SCORECARD_DIMENSIONS,
     Agent,
     DecisionFrame,
     DecisionFrameStart,
     Error,
     Event,
+    RecommendationReport,
+    RecommendationsComplete,
     RoundStart,
     ScoreReport,
     ScorecardComplete,
@@ -61,6 +64,7 @@ async def render(
     # block can show the confidence number alongside the vote.
     verdicts: dict[str, tuple[str, int | None, str | None]] = {}
     score_reports: list[ScoreReport] = []
+    recommendation_reports: list[RecommendationReport] = []
     total_input = 0
     total_output = 0
     total_cache_write = 0
@@ -118,6 +122,49 @@ async def render(
             console.print(
                 f"  [bold]Composite:[/] {event.composite:.2f} / 5"
             )
+            if total_input or total_output or total_cache_read or total_cache_write:
+                total_in_all = total_input + total_cache_write + total_cache_read
+                cache_note = ""
+                if total_cache_read or total_cache_write:
+                    cache_note = (
+                        f"  [dim](cache: {total_cache_write:,} w · "
+                        f"{total_cache_read:,} r)[/]"
+                    )
+                console.print(
+                    f"\n  Usage: {total_in_all:,} in · {total_output:,} out"
+                    f"  [dim]~${total_cost:.4f}[/]{cache_note}"
+                )
+        elif isinstance(event, RecommendationReport):
+            recommendation_reports.append(event)
+        elif isinstance(event, RecommendationsComplete):
+            console.print(Rule("Recommendations", style="dim"))
+            action_color = {
+                "PROCEED": "green",
+                "PAUSE": "yellow",
+                "PIVOT": "cyan",
+                "KILL": "red",
+                "UNCLEAR": "dim",
+            }
+            max_role = max((len(rr.role) for rr in event.by_agent), default=8)
+            for rr in event.by_agent:
+                role_color = _color_for(rr.role, agents)
+                act_color = action_color.get(rr.action, "white")
+                reason = rr.reasoning or "(no reasoning)"
+                console.print(
+                    f"  [{role_color}]{rr.role:<{max_role}}[/]  "
+                    f"[bold {act_color}]{rr.action:<7}[/]  {reason}"
+                )
+            # Counts summary
+            count_parts = []
+            for action in RECOMMENDATION_ACTIONS:
+                c = event.counts.get(action, 0)
+                if c:
+                    count_parts.append(f"[{action_color[action]}]{c} {action}[/]")
+                else:
+                    count_parts.append(f"[dim]0 {action}[/]")
+            if event.counts.get("UNCLEAR"):
+                count_parts.append(f"[dim]{event.counts['UNCLEAR']} unclear[/]")
+            console.print("\n  Counts:  " + " · ".join(count_parts))
             if total_input or total_output or total_cache_read or total_cache_write:
                 total_in_all = total_input + total_cache_write + total_cache_read
                 cache_note = ""
