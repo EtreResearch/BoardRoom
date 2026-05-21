@@ -48,6 +48,7 @@ Optional flags:
 ```bash
 python boardroom.py --tui "An AI app that generates personalized bedtime stories for politicians."
 ```
+<img width="1476" height="937" alt="Screenshot 2026-05-21 at 14 58 45" src="https://github.com/user-attachments/assets/fcbfadcf-1199-4780-b7aa-00a2fea1ac8f" />
 
 A polished interface opens in your terminal:
 
