@@ -18,7 +18,7 @@ cp .env.example .env
 ## Run
 
 ```bash
-python boardroom.py "An AI app that generates personalized bedtime stories for kids."
+python boardroom.py --tui --rounds 2 "An AI app that generates personalized bedtime stories for politicians."
 ```
 
 Optional flags:
@@ -46,7 +46,7 @@ Optional flags:
 ## TUI mode
 
 ```bash
-python boardroom.py --tui "An AI app that generates personalized bedtime stories for kids."
+python boardroom.py --tui "An AI app that generates personalized bedtime stories for politicians."
 ```
 
 A polished interface opens in your terminal:
