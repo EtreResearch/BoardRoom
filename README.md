@@ -144,3 +144,4 @@ TODO:
 1. Improved UI
 2. Support open source providers
 3. Built-in token compression engine
+4. Demo video in readme
