@@ -138,3 +138,9 @@ Each agent's verdict prompt also asks for their own **strongest counter-argument
 (the "what would change your mind" steel-man), which appears in the saved
 transcript next to their vote. The synthesis call costs roughly one extra
 agent-turn (~$0.005–$0.01 on Sonnet) per run.
+
+
+TODO:
+1. Improved UI
+2. Support open source providers
+3. Built-in token compression engine
