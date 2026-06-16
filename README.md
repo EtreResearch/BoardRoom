@@ -27,20 +27,6 @@ Optional flags:
 - `--model ID` — override the model for all agents (e.g. `claude-haiku-4-5-20251001`).
 - `--config PATH` — use a different agents file.
 - `--ordered` — speak in YAML order every round instead of shuffling.
-- `--seed N` — seed the per-round shuffle for reproducibility.
-- `--no-setup` — skip the TUI setup screen (use the flag values directly).
-- `--verdict {decision_frame,simple,scorecard,recommendation}` — verdict-round
-  style. Default is `decision_frame` (confidence + steel-man + synthesized
-  case-for/against). `simple` reverts to the original `N GOOD / M BAD →
-  VERDICT` tally with no confidence collection and no synthesis call —
-  useful for batch / scripted runs that want one number per idea at
-  minimum cost. `scorecard` swaps the GOOD/BAD vote for a per-dimension
-  1-5 rating across Market, Tech, UX, and Risk, plus per-dimension
-  averages and a composite score — useful when you want quantitative
-  comparison across multiple ideas. `recommendation` asks each agent
-  for an action (PROCEED / PAUSE / PIVOT / KILL) plus a 2-3 sentence
-  rationale — useful when the question isn't "is this good" but "what
-  should we do".
 
 ## TUI mode
 
@@ -53,9 +39,6 @@ python boardroom.py --tui "An AI app that generates personalized bedtime stories
 
 A polished interface opens in your terminal:
 
-- **Setup screen** — a brief picker at startup chooses the speaking order
-  for the run (Shuffled / Structured). ← / → toggles, Enter accepts.
-  Skipped if you pass `--no-setup`.
 - **Header** — title and idea.
 - **Chat log** (left) — finalized turns scroll by; the in-flight turn streams
   into a panel pinned at the bottom. Each round header shows the speaking
@@ -87,11 +70,11 @@ For each round, every agent receives the running transcript and speaks once.
 By default the speaking order is **shuffled per round** so no single executive
 always frames the discussion or always speaks last (the first speaker gets
 zero context; the last speaker reads three prior turns — fixed order quietly
-biases the conversation). Pass `--ordered` to keep the YAML order, or
-`--seed N` to reproduce a specific shuffle. Token output streams to the
-terminal as it's generated. After the final round, each agent is asked for
-a one-line `VERDICT: GOOD | BAD` plus reasoning; the script tallies and
-prints the majority verdict.
+biases the conversation). Pass `--ordered` to keep the YAML order. Token
+output streams to the terminal as it's generated. After the final round,
+each agent is asked for a `VERDICT: GOOD | BAD` plus confidence and
+reasoning; the engine builds a stratified tally and synthesizes a decision
+frame.
 
 Each agent's persona is sent with `cache_control: ephemeral` so it's cached
 across turns, keeping cost down. Per-turn token usage from the Anthropic API

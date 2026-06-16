@@ -16,13 +16,9 @@ from rich.rule import Rule
 
 from engine import (
     DEFAULT_ROUNDS,
-    DEFAULT_VERDICT_MODE,
-    VERDICT_MODES,
     load_config,
     run_boardroom,
 )
-
-HIGH_ROUNDS_WARN_THRESHOLD = 10
 
 
 def _positive_int(value: str) -> int:
@@ -69,29 +65,6 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Speak in YAML order every round (default: shuffle each round).",
     )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Seed the per-round shuffle for reproducibility.",
-    )
-    parser.add_argument(
-        "--no-setup",
-        action="store_true",
-        help="Skip the TUI setup screen and use the flag values directly.",
-    )
-    parser.add_argument(
-        "--verdict",
-        choices=VERDICT_MODES,
-        default=DEFAULT_VERDICT_MODE,
-        help=(
-            "Verdict round style. "
-            "decision_frame (default): per-agent confidence + steel-man + synthesized "
-            "case-for / case-against / biggest unknown / conditions. "
-            "simple: raw GOOD/BAD count, no extra synthesis call — cheaper, suited "
-            "for batch / scripted runs."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -103,7 +76,6 @@ async def _run_stdout(args, agents, model, max_tokens) -> None:
     console.print(f"[bold]Idea:[/] {args.idea}")
     console.print(
         f"[dim]Model: {model} · Rounds: {args.rounds} · "
-        f"Verdict: {args.verdict} · "
         f"Agents: {', '.join(a.role for a in agents)}[/]\n"
     )
 
@@ -117,8 +89,6 @@ async def _run_stdout(args, agents, model, max_tokens) -> None:
             model,
             max_tokens,
             ordered=args.ordered,
-            seed=args.seed,
-            verdict_mode=args.verdict,
         )
         await render(events, console, agents)
     finally:
@@ -135,9 +105,6 @@ def _run_tui(args, agents, model, max_tokens) -> None:
         model=model,
         max_tokens=max_tokens,
         ordered=args.ordered,
-        seed=args.seed,
-        no_setup=args.no_setup,
-        verdict_mode=args.verdict,
     )
     app.run()
 
@@ -152,18 +119,6 @@ def main() -> None:
     agents, model, max_tokens = load_config(args.config)
     if args.model:
         model = args.model
-
-    if args.rounds > HIGH_ROUNDS_WARN_THRESHOLD and not args.tui:
-        # Skipped in TUI mode: Textual switches to the alternate screen on
-        # app.run(), which would hide a stderr message until after the run
-        # ends. The TUI's live cost panel covers that case.
-        total_calls = (args.rounds + 1) * len(agents)
-        print(
-            f"Warning: --rounds {args.rounds} × {len(agents)} agents = "
-            f"~{total_calls} API calls (incl. verdict round). "
-            f"This may be expensive on paid providers. Ctrl+C to cancel.",
-            file=sys.stderr,
-        )
 
     if args.tui:
         _run_tui(args, agents, model, max_tokens)

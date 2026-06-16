@@ -16,23 +16,14 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, Input, RichLog, Static
-
-from rich.table import Table
+from textual.widgets import Footer, Header, Input, RichLog, Static
 
 from engine import (
-    DEFAULT_VERDICT_MODE,
-    RECOMMENDATION_ACTIONS,
-    SCORECARD_DIMENSIONS,
     Agent,
     DecisionFrame,
     DecisionFrameStart,
     Error,
-    RecommendationReport,
-    RecommendationsComplete,
     RoundStart,
-    ScoreReport,
-    ScorecardComplete,
     TallyComplete,
     Token,
     Turn,
@@ -52,12 +43,6 @@ STATUS_LABELS = {
     "voted_good": "[green]voted GOOD[/]",
     "voted_bad": "[red]voted BAD[/]",
     "voted_unclear": "[yellow]voted ?[/]",
-    "scored": "[cyan]scored[/]",
-    "rec_proceed": "[green]proceed[/]",
-    "rec_pause": "[yellow]pause[/]",
-    "rec_pivot": "[cyan]pivot[/]",
-    "rec_kill": "[red]kill[/]",
-    "rec_unclear": "[dim]?[/]",
 }
 
 
@@ -73,7 +58,7 @@ class AgentRoster(Vertical):
         yield Static("[b]Agents[/]", classes="section-title")
         for agent in self.agents:
             yield Static(
-                self._render(agent),
+                self._render_text(agent),
                 id=f"role-{self._slug(agent.role)}",
                 classes="roster-row",
             )
@@ -82,9 +67,9 @@ class AgentRoster(Vertical):
         self.statuses[role] = status
         agent = next(a for a in self.agents if a.role == role)
         widget = self.query_one(f"#role-{self._slug(role)}", Static)
-        widget.update(self._render(agent))
+        widget.update(self._render_text(agent))
 
-    def _render(self, agent: Agent) -> str:
+    def _render_text(self, agent: Agent) -> str:
         status = self.statuses[agent.role]
         return f"[bold {agent.color}]●[/] {agent.role:<14} {STATUS_LABELS[status]}"
 
@@ -118,14 +103,14 @@ class TallySummary(Static):
         self.net_score = 0.0
         self.headline = ""
         self.strong_dissent = 0
-        self.update(self._render())
+        self.update(self._render_text())
 
     def add_vote(self, verdict: str) -> None:
         if verdict == "GOOD":
             self.good += 1
         elif verdict == "BAD":
             self.bad += 1
-        self.update(self._render())
+        self.update(self._render_text())
 
     def finalize(self, event: "TallyComplete") -> None:
         self.good = event.good
@@ -141,7 +126,7 @@ class TallySummary(Static):
         self.net_score = event.net_score
         self.headline = event.headline
         self.strong_dissent = event.strong_dissent
-        self.update(self._render())
+        self.update(self._render_text())
 
     @staticmethod
     def _headline_color(headline: str) -> str:
@@ -151,24 +136,10 @@ class TallySummary(Static):
             return "red"
         return "yellow"
 
-    def _render(self) -> str:
+    def _render_text(self) -> str:
         # Live view (during verdict round, before TallyComplete).
         if self.overall is None:
             return f"[b]Tally[/]\n\n{self.good} GOOD · {self.bad} BAD"
-
-        # `--verdict simple` produces a finalized TallyComplete with an
-        # empty headline. Render the legacy count + overall rather than
-        # the stratified view it doesn't have data for.
-        if not self.headline:
-            styled = {
-                "GOOD": "[bold green]GOOD[/]",
-                "BAD": "[bold red]BAD[/]",
-                "SPLIT": "[bold yellow]SPLIT[/]",
-            }[self.overall]
-            return (
-                f"[b]Tally[/]\n\n{self.good} GOOD / {self.bad} BAD"
-                f"\n\nVerdict: {styled}"
-            )
 
         # Finalized stratified view.
         color = self._headline_color(self.headline)
@@ -219,7 +190,7 @@ class TokenUsage(Static):
         self.last_role: str | None = None
         self.last_input = 0
         self.last_output = 0
-        self.update(self._render())
+        self.update(self._render_text())
 
     def add_usage(self, event: UsageReport) -> None:
         self.total_input += event.input_tokens
@@ -236,9 +207,9 @@ class TokenUsage(Static):
             + event.cache_read_input_tokens
         )
         self.last_output = event.output_tokens
-        self.update(self._render())
+        self.update(self._render_text())
 
-    def _render(self) -> str:
+    def _render_text(self) -> str:
         if self.last_role is None:
             return "[b]Usage[/]\n\n[dim]—[/]"
         total_input = self.total_input + self.total_cache_write + self.total_cache_read
@@ -255,53 +226,6 @@ class TokenUsage(Static):
                 f"{self.total_cache_write:,} w · {self.total_cache_read:,} r"
             )
         return body
-
-
-class SetupScreen(ModalScreen[bool]):
-    """One-question setup picker shown before the discussion starts."""
-
-    BINDINGS = [
-        ("q", "app.quit", "Quit"),
-        ("s", "pick_shuffled", "Shuffled"),
-        ("t", "pick_structured", "Structured"),
-    ]
-
-    def __init__(self, default_ordered: bool) -> None:
-        super().__init__()
-        self.default_ordered = default_ordered
-
-    def compose(self) -> ComposeResult:
-        with Container(id="setup-container"):
-            yield Static("[b]Setup[/]", id="setup-title")
-            yield Static("How should the executives take turns?", id="setup-question")
-            with Horizontal(id="setup-options"):
-                yield Button(
-                    "Shuffled",
-                    id="opt-shuffled",
-                    variant="primary" if not self.default_ordered else "default",
-                )
-                yield Button(
-                    "Structured",
-                    id="opt-structured",
-                    variant="primary" if self.default_ordered else "default",
-                )
-            yield Static(
-                "[dim]Tab / ← → toggle · Enter accept · q quit[/]",
-                id="setup-help",
-            )
-
-    def on_mount(self) -> None:
-        focus_id = "opt-structured" if self.default_ordered else "opt-shuffled"
-        self.query_one(f"#{focus_id}", Button).focus()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "opt-structured")
-
-    def action_pick_shuffled(self) -> None:
-        self.dismiss(False)
-
-    def action_pick_structured(self) -> None:
-        self.dismiss(True)
 
 
 class InterjectScreen(ModalScreen[str | None]):
@@ -353,9 +277,6 @@ class BoardRoomApp(App):
         model: str,
         max_tokens: int,
         ordered: bool = False,
-        seed: int | None = None,
-        no_setup: bool = False,
-        verdict_mode: str = DEFAULT_VERDICT_MODE,
     ) -> None:
         super().__init__()
         self.idea = idea
@@ -364,9 +285,6 @@ class BoardRoomApp(App):
         self.model = model
         self.max_tokens = max_tokens
         self.ordered = ordered
-        self.seed = seed
-        self.no_setup = no_setup
-        self.verdict_mode = verdict_mode
         self._buffer = ""
         self._transcript: list[Turn] = []
         self._in_verdict_round = False
@@ -376,8 +294,6 @@ class BoardRoomApp(App):
         self._verdicts: list[dict] = []             # [{role, verdict, confidence, reasoning, disconfirming}]
         self._tally: dict | None = None              # {good, bad, overall, ...strata}
         self._decision_frame: dict | None = None     # {case_for, case_against, biggest_unknown, conditions}
-        self._scorecard: dict | None = None           # {by_agent, averages, composite}
-        self._recommendations: dict | None = None      # {by_agent, counts}
         self._verdict_directive: str | None = None   # directive applied to the verdict round
         # Interjection state.
         self._pending_directive: str | None = None
@@ -399,14 +315,6 @@ class BoardRoomApp(App):
         self.title = "BoardRoom"
         idea_short = self.idea if len(self.idea) <= 80 else self.idea[:79] + "…"
         self.sub_title = idea_short
-        if self.no_setup:
-            self._run_discussion()
-        else:
-            self.push_screen(SetupScreen(self.ordered), self._on_setup_done)
-
-    def _on_setup_done(self, ordered: bool | None) -> None:
-        if ordered is not None:
-            self.ordered = ordered
         self._run_discussion()
 
     async def on_unmount(self) -> None:
@@ -430,9 +338,7 @@ class BoardRoomApp(App):
             self.model,
             self.max_tokens,
             ordered=self.ordered,
-            seed=self.seed,
             consume_directive=self._consume_directive,
-            verdict_mode=self.verdict_mode,
         ):
             if isinstance(event, RoundStart):
                 self._rounds_data.append(
@@ -533,105 +439,6 @@ class BoardRoomApp(App):
                     }
                 )
 
-            elif isinstance(event, ScoreReport):
-                roster.update_status(event.role, "scored")
-
-            elif isinstance(event, ScorecardComplete):
-                # Capture for the saved transcript.
-                self._scorecard = {
-                    "by_agent": [
-                        {
-                            "role": sr.role,
-                            "scores": dict(sr.scores),
-                            "notes": dict(sr.notes),
-                        }
-                        for sr in event.by_agent
-                    ],
-                    "averages": dict(event.averages),
-                    "composite": event.composite,
-                }
-                chat.write(Text("── Scorecard ──", style="dim"))
-                table = Table(show_header=True, header_style="bold")
-                table.add_column("Agent", style="bold")
-                for dim in SCORECARD_DIMENSIONS:
-                    table.add_column(dim.title(), justify="right")
-                for sr in event.by_agent:
-                    color = self._color(sr.role)
-                    table.add_row(
-                        f"[{color}]{sr.role}[/]",
-                        *(
-                            "—" if sr.scores.get(dim) is None else str(sr.scores[dim])
-                            for dim in SCORECARD_DIMENSIONS
-                        ),
-                    )
-                table.add_section()
-                table.add_row(
-                    "[bold]Average[/]",
-                    *(f"{event.averages[dim]:.1f}" for dim in SCORECARD_DIMENSIONS),
-                )
-                chat.write(table)
-                chat.write(
-                    f"[b]Composite:[/] [bold cyan]{event.composite:.2f}[/] / 5"
-                )
-
-            elif isinstance(event, RecommendationReport):
-                status_map = {
-                    "PROCEED": "rec_proceed",
-                    "PAUSE": "rec_pause",
-                    "PIVOT": "rec_pivot",
-                    "KILL": "rec_kill",
-                }
-                roster.update_status(
-                    event.role, status_map.get(event.action, "rec_unclear")
-                )
-
-            elif isinstance(event, RecommendationsComplete):
-                # Capture for the saved transcript.
-                self._recommendations = {
-                    "by_agent": [
-                        {
-                            "role": rr.role,
-                            "action": rr.action,
-                            "reasoning": rr.reasoning or "",
-                        }
-                        for rr in event.by_agent
-                    ],
-                    "counts": dict(event.counts),
-                }
-                chat.write(Text("── Recommendations ──", style="dim"))
-                action_color = {
-                    "PROCEED": "green",
-                    "PAUSE": "yellow",
-                    "PIVOT": "cyan",
-                    "KILL": "red",
-                    "UNCLEAR": "dim",
-                }
-                max_role = max(
-                    (len(rr.role) for rr in event.by_agent), default=8
-                )
-                for rr in event.by_agent:
-                    role_color = self._color(rr.role)
-                    act_color = action_color.get(rr.action, "white")
-                    reason = rr.reasoning or "(no reasoning)"
-                    chat.write(
-                        f"  [{role_color}]{rr.role:<{max_role}}[/]  "
-                        f"[bold {act_color}]{rr.action:<7}[/]  {reason}"
-                    )
-                count_parts = []
-                for action in RECOMMENDATION_ACTIONS:
-                    c = event.counts.get(action, 0)
-                    if c:
-                        count_parts.append(
-                            f"[{action_color[action]}]{c} {action}[/]"
-                        )
-                    else:
-                        count_parts.append(f"[dim]0 {action}[/]")
-                if event.counts.get("UNCLEAR"):
-                    count_parts.append(
-                        f"[dim]{event.counts['UNCLEAR']} unclear[/]"
-                    )
-                chat.write("\n[b]Counts:[/]  " + " · ".join(count_parts))
-
             elif isinstance(event, TallyComplete):
                 tally.finalize(event)
                 self._tally = {
@@ -649,34 +456,23 @@ class BoardRoomApp(App):
                     "unclear": event.unclear,
                     "strong_dissent": event.strong_dissent,
                 }
-                if event.headline:
-                    headline_color = (
-                        "green" if "GOOD" in event.headline
-                        else "red" if "BAD" in event.headline
-                        else "yellow"
-                    )
-                    warning = (
-                        f"  [yellow]⚠ {event.strong_dissent} strong dissent[/]"
-                        if event.strong_dissent
-                        else ""
-                    )
-                    chat.write(
-                        f"[b]Final verdict:[/] "
-                        f"[bold {headline_color}]{event.headline}[/]"
-                        f"{warning}  "
-                        f"[dim]({event.good} GOOD / {event.bad} BAD · "
-                        f"weighted {event.net_score:+.0%})[/]"
-                    )
-                else:
-                    # `--verdict simple`: no confidence-stratified data;
-                    # fall back to the legacy line.
-                    color = {
-                        "GOOD": "green", "BAD": "red", "SPLIT": "yellow",
-                    }[event.overall]
-                    chat.write(
-                        f"[b]Final verdict:[/] [bold {color}]{event.overall}[/]"
-                        f"  [dim]({event.good} GOOD / {event.bad} BAD)[/]"
-                    )
+                headline_color = (
+                    "green" if "GOOD" in event.headline
+                    else "red" if "BAD" in event.headline
+                    else "yellow"
+                )
+                warning = (
+                    f"  [yellow]⚠ {event.strong_dissent} strong dissent[/]"
+                    if event.strong_dissent
+                    else ""
+                )
+                chat.write(
+                    f"[b]Final verdict:[/] "
+                    f"[bold {headline_color}]{event.headline}[/]"
+                    f"{warning}  "
+                    f"[dim]({event.good} GOOD / {event.bad} BAD · "
+                    f"weighted {event.net_score:+.0%})[/]"
+                )
 
             elif isinstance(event, DecisionFrameStart):
                 chat.write(Text("── Decision frame ──", style="dim"))
@@ -744,8 +540,6 @@ class BoardRoomApp(App):
                 "rounds": self.rounds,
                 "max_tokens": self.max_tokens,
                 "ordered": self.ordered,
-                "seed": self.seed,
-                "verdict_mode": self.verdict_mode,
             },
             "agents": [
                 {"role": a.role, "color": a.color, "system": a.system}
@@ -756,8 +550,6 @@ class BoardRoomApp(App):
             "verdicts": self._verdicts,
             "tally": self._tally,
             "decision_frame": self._decision_frame,
-            "scorecard": self._scorecard,
-            "recommendations": self._recommendations,
             "usage": {
                 "input_tokens": usage.total_input,
                 "output_tokens": usage.total_output,
@@ -780,8 +572,6 @@ class BoardRoomApp(App):
             f"**Model:** {self.model} · **Rounds:** {self.rounds} · "
             f"**Order:** {order_label}"
         )
-        if self.seed is not None:
-            header += f" · **Seed:** {self.seed}"
         header += f"  \n**Saved:** {saved_at}\n"
 
         body: list[str] = [f"---\n{frontmatter}---\n", header]
@@ -812,94 +602,40 @@ class BoardRoomApp(App):
 
         if self._tally is not None:
             t = self._tally
-            if not t.get("headline"):
-                # `--verdict simple`: no strata data; render legacy.
-                body.append(
-                    f"\n## Tally\n\n"
-                    f"**{t['good']} GOOD / {t['bad']} BAD → {t['overall']}**\n"
-                )
-            else:
-                warning = (
-                    f"  ⚠ {t['strong_dissent']} strong dissent"
-                    if t.get("strong_dissent")
-                    else ""
-                )
-                tally_lines = [
-                    f"\n## Tally\n",
-                    f"**{t['headline']}**{warning}",
-                    "",
-                ]
-                good_total = t.get("strong_good", 0) + t.get("lean_good", 0) + t.get("weak_good", 0)
-                bad_total = t.get("strong_bad", 0) + t.get("lean_bad", 0) + t.get("weak_bad", 0)
-                if good_total:
-                    tally_lines.append(
-                        f"- GOOD: {t.get('strong_good', 0)} strong · "
-                        f"{t.get('lean_good', 0)} lean"
-                    )
-                if bad_total:
-                    tally_lines.append(
-                        f"- BAD: {t.get('strong_bad', 0)} strong · "
-                        f"{t.get('lean_bad', 0)} lean"
-                    )
-                weak_total = t.get("weak_good", 0) + t.get("weak_bad", 0)
-                if weak_total:
-                    tally_lines.append(f"- Weak: {weak_total}")
-                if t.get("unclear"):
-                    tally_lines.append(f"- Unclear: {t['unclear']}")
-                tally_lines.append("")
-                net = t.get("net_score", 0.0)
+            warning = (
+                f"  ⚠ {t['strong_dissent']} strong dissent"
+                if t.get("strong_dissent")
+                else ""
+            )
+            tally_lines = [
+                "\n## Tally\n",
+                f"**{t['headline']}**{warning}",
+                "",
+            ]
+            good_total = t.get("strong_good", 0) + t.get("lean_good", 0) + t.get("weak_good", 0)
+            bad_total = t.get("strong_bad", 0) + t.get("lean_bad", 0) + t.get("weak_bad", 0)
+            if good_total:
                 tally_lines.append(
-                    f"_Raw count: {t['good']} GOOD / {t['bad']} BAD · "
-                    f"weighted {net:+.0%}_\n"
+                    f"- GOOD: {t.get('strong_good', 0)} strong · "
+                    f"{t.get('lean_good', 0)} lean"
                 )
-                body.append("\n".join(tally_lines))
-
-        if self._scorecard is not None:
-            sc = self._scorecard
-            sc_lines = ["\n## Scorecard\n"]
-            # Header row.
-            header = "| Agent | " + " | ".join(d.title() for d in SCORECARD_DIMENSIONS) + " |"
-            sep = "|---|" + "|".join("---:" for _ in SCORECARD_DIMENSIONS) + "|"
-            sc_lines += [header, sep]
-            for entry in sc["by_agent"]:
-                row_vals = [
-                    "—" if entry["scores"].get(dim) is None else str(entry["scores"][dim])
-                    for dim in SCORECARD_DIMENSIONS
-                ]
-                sc_lines.append(f"| **{entry['role']}** | " + " | ".join(row_vals) + " |")
-            # Averages row.
-            avg_vals = [f"{sc['averages'][dim]:.1f}" for dim in SCORECARD_DIMENSIONS]
-            sc_lines.append(f"| **Average** | " + " | ".join(avg_vals) + " |")
-            sc_lines.append(f"\n**Composite:** {sc['composite']:.2f} / 5\n")
-            # Per-agent notes for context.
-            sc_lines.append("\n### Notes\n")
-            for entry in sc["by_agent"]:
-                sc_lines.append(f"- **{entry['role']}**")
-                for dim in SCORECARD_DIMENSIONS:
-                    note = entry["notes"].get(dim) or ""
-                    score = entry["scores"].get(dim)
-                    score_str = "—" if score is None else str(score)
-                    if note:
-                        sc_lines.append(f"  - *{dim.title()}* ({score_str}): {note}")
-            sc_lines.append("")
-            body.append("\n".join(sc_lines))
-
-        if self._recommendations is not None:
-            rec = self._recommendations
-            rec_lines = ["\n## Recommendations\n"]
-            for entry in rec["by_agent"]:
-                reason = entry.get("reasoning") or "(no reasoning)"
-                rec_lines.append(
-                    f"- **{entry['role']}** — **{entry['action']}** — _{reason}_"
+            if bad_total:
+                tally_lines.append(
+                    f"- BAD: {t.get('strong_bad', 0)} strong · "
+                    f"{t.get('lean_bad', 0)} lean"
                 )
-            count_parts = []
-            for action in RECOMMENDATION_ACTIONS:
-                count_parts.append(f"{rec['counts'].get(action, 0)} {action}")
-            if rec["counts"].get("UNCLEAR"):
-                count_parts.append(f"{rec['counts']['UNCLEAR']} unclear")
-            rec_lines.append("")
-            rec_lines.append(f"**Counts:** {' · '.join(count_parts)}\n")
-            body.append("\n".join(rec_lines))
+            weak_total = t.get("weak_good", 0) + t.get("weak_bad", 0)
+            if weak_total:
+                tally_lines.append(f"- Weak: {weak_total}")
+            if t.get("unclear"):
+                tally_lines.append(f"- Unclear: {t['unclear']}")
+            tally_lines.append("")
+            net = t.get("net_score", 0.0)
+            tally_lines.append(
+                f"_Raw count: {t['good']} GOOD / {t['bad']} BAD · "
+                f"weighted {net:+.0%}_\n"
+            )
+            body.append("\n".join(tally_lines))
 
         if self._decision_frame is not None:
             df = self._decision_frame

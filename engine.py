@@ -151,39 +151,6 @@ class UsageReport:
 
 
 @dataclass
-class ScoreReport:
-    """One agent's per-dimension scorecard (verdict_mode='scorecard')."""
-    role: str
-    scores: dict[str, int | None]   # {"MARKET": 4, "TECH": None, ...}
-    notes: dict[str, str]            # {"MARKET": "the one-sentence note", ...}
-    text: str                        # raw response
-
-
-@dataclass
-class ScorecardComplete:
-    """Aggregated scorecard across all agents."""
-    by_agent: list[ScoreReport]
-    averages: dict[str, float]   # per-dimension mean across agents with that score
-    composite: float              # mean of the four dimension averages
-
-
-@dataclass
-class RecommendationReport:
-    """One agent's recommendation (verdict_mode='recommendation')."""
-    role: str
-    action: str  # "PROCEED" | "PAUSE" | "PIVOT" | "KILL" | "UNCLEAR"
-    reasoning: str | None
-    text: str    # raw response
-
-
-@dataclass
-class RecommendationsComplete:
-    """Aggregated recommendations across all agents."""
-    by_agent: list[RecommendationReport]
-    counts: dict[str, int]  # {PROCEED, PAUSE, PIVOT, KILL, UNCLEAR}
-
-
-@dataclass
 class Error:
     role: str | None
     message: str
@@ -199,10 +166,6 @@ Event = (
     | TallyComplete
     | DecisionFrameStart
     | DecisionFrame
-    | ScoreReport
-    | ScorecardComplete
-    | RecommendationReport
-    | RecommendationsComplete
     | UsageReport
     | Error
 )
@@ -287,122 +250,6 @@ def format_verdict_prompt(
     )
 
 
-def format_scorecard_prompt(
-    idea: str,
-    transcript: list[Turn],
-    next_role: str,
-    directive: str | None = None,
-) -> str:
-    """Scorecard verdict prompt for `--verdict scorecard`.
-
-    Asks for 1-5 ratings across four dimensions with one-sentence
-    justifications. RISK is framed "higher = safer" so all dimensions point
-    the same direction and per-dimension averaging is coherent.
-    """
-    return (
-        format_transcript(idea, transcript, next_role, directive=directive)
-        + "\n\nThe discussion is complete. Score this idea on four dimensions"
-        " using EXACTLY this format:\n"
-        "\n"
-        "MARKET: 4 - One sentence on market opportunity / timing (higher = bigger market or better timing).\n"
-        "TECH: 3 - One sentence on technical feasibility (higher = more feasible / less build risk).\n"
-        "UX: 4 - One sentence on user value clarity (higher = clearer value to the user).\n"
-        "RISK: 2 - One sentence on risk profile (higher = better controlled / safer).\n"
-        "\n"
-        "Rules:\n"
-        "- Each score is an integer 1-5.\n"
-        "- Each line is exactly: <DIMENSION>: <score> - <one sentence>\n"
-        "- Use the dimension keywords MARKET, TECH, UX, RISK in that order.\n"
-        "- Output exactly four lines. No preamble, no closing remarks."
-    )
-
-
-def parse_scorecard(text: str) -> tuple[dict[str, int | None], dict[str, str]]:
-    """Parse a scorecard response. Returns (scores, notes), keyed by dimension.
-
-    Missing dimensions get `None` (scores) or `""` (notes). Unparseable
-    output → all dimensions empty/None; the caller treats that as a
-    degraded-but-honest result.
-    """
-    scores: dict[str, int | None] = {d: None for d in SCORECARD_DIMENSIONS}
-    notes: dict[str, str] = {d: "" for d in SCORECARD_DIMENSIONS}
-    for m in SCORECARD_LINE_RE.finditer(text):
-        dim = m.group(1).upper()
-        scores[dim] = int(m.group(2))
-        notes[dim] = m.group(3).strip()
-    return scores, notes
-
-
-def compute_scorecard_complete(reports: list["ScoreReport"]) -> "ScorecardComplete":
-    """Average each dimension across agents (skipping None) and the composite."""
-    averages: dict[str, float] = {}
-    for dim in SCORECARD_DIMENSIONS:
-        values = [r.scores[dim] for r in reports if r.scores.get(dim) is not None]
-        averages[dim] = round(sum(values) / len(values), 2) if values else 0.0
-    nonzero = [v for v in averages.values() if v > 0]
-    composite = round(sum(nonzero) / len(nonzero), 2) if nonzero else 0.0
-    return ScorecardComplete(by_agent=list(reports), averages=averages, composite=composite)
-
-
-def format_recommendation_prompt(
-    idea: str,
-    transcript: list[Turn],
-    next_role: str,
-    directive: str | None = None,
-) -> str:
-    """Recommendation verdict prompt for `--verdict recommendation`.
-
-    Asks for an ACTION (PROCEED / PAUSE / PIVOT / KILL) plus a 2-3 sentence
-    rationale. Useful when the question isn't "is this good" but "what
-    should we do" — the four actions cover the realistic decision space.
-    """
-    return (
-        format_transcript(idea, transcript, next_role, directive=directive)
-        + "\n\nThe discussion is complete. Give your recommendation in this exact format:\n"
-        "\n"
-        "ACTION: PROCEED\n"
-        "REASONING: Two-to-three sentence recommendation. Explain what to do and why.\n"
-        "\n"
-        "Rules:\n"
-        "- ACTION must be exactly one of: PROCEED, PAUSE, PIVOT, KILL.\n"
-        "- REASONING is two to three sentences.\n"
-        "- Output nothing else — no preamble, no markdown."
-    )
-
-
-def compute_recommendations_complete(
-    reports: list["RecommendationReport"],
-) -> "RecommendationsComplete":
-    """Count actions across agents; UNCLEAR captures unparseable responses."""
-    counts: dict[str, int] = {a: 0 for a in RECOMMENDATION_ACTIONS}
-    counts["UNCLEAR"] = 0
-    for r in reports:
-        if r.action in counts:
-            counts[r.action] += 1
-        else:
-            counts["UNCLEAR"] += 1
-    return RecommendationsComplete(by_agent=list(reports), counts=counts)
-
-
-def format_simple_verdict_prompt(
-    idea: str,
-    transcript: list[Turn],
-    next_role: str,
-    directive: str | None = None,
-) -> str:
-    """Compact verdict prompt for `--verdict simple`: just GOOD/BAD + one sentence.
-
-    No confidence, no disconfirming, no synthesis — minimum tokens, minimum
-    cost, one-line tally suitable for batch / scripted comparison.
-    """
-    return (
-        format_transcript(idea, transcript, next_role, directive=directive)
-        + "\n\nThe discussion is complete. Give your final verdict in this exact format:\n"
-        "`VERDICT: GOOD` or `VERDICT: BAD`, followed by one sentence of reasoning.\n"
-        "Do not write anything else."
-    )
-
-
 SYNTHESIZER_SYSTEM = (
     "You are the panel's secretary. Your job is to synthesize a neutral "
     "decision frame from the executives' verdicts and the discussion that "
@@ -464,6 +311,21 @@ def format_decision_frame_prompt(
     return "\n".join(lines)
 
 
+def _usage_report(role: str, model: str, final_message) -> UsageReport | None:
+    """Build a UsageReport from a stream's final message, or None if no usage."""
+    if final_message is None or getattr(final_message, "usage", None) is None:
+        return None
+    u = final_message.usage
+    return UsageReport(
+        role=role,
+        model=model,
+        input_tokens=getattr(u, "input_tokens", 0) or 0,
+        output_tokens=getattr(u, "output_tokens", 0) or 0,
+        cache_creation_input_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
+        cache_read_input_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+    )
+
+
 async def _synthesize_decision_frame(
     client: AsyncAnthropic,
     idea: str,
@@ -499,16 +361,9 @@ async def _synthesize_decision_frame(
         yield Error("(synthesizer)", f"Decision-frame synthesis failed: {e}")
         return
 
-    if final_message is not None and getattr(final_message, "usage", None) is not None:
-        u = final_message.usage
-        yield UsageReport(
-            role="(synthesizer)",
-            model=model,
-            input_tokens=getattr(u, "input_tokens", 0) or 0,
-            output_tokens=getattr(u, "output_tokens", 0) or 0,
-            cache_creation_input_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
-            cache_read_input_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
-        )
+    report = _usage_report("(synthesizer)", model, final_message)
+    if report is not None:
+        yield report
 
     yield parse_decision_frame("".join(chunks))
 
@@ -531,12 +386,6 @@ def parse_reasoning(text: str) -> str | None:
         return None
     reasoning = match.group(1).strip()
     return reasoning or None
-
-
-def parse_action(text: str) -> str:
-    """Parse `ACTION: <PROCEED|PAUSE|PIVOT|KILL>`. Unparseable → 'UNCLEAR'."""
-    m = ACTION_RE.search(text)
-    return m.group(1).upper() if m else "UNCLEAR"
 
 
 def parse_disconfirming(text: str) -> str | None:
@@ -728,31 +577,9 @@ async def _stream_one(
         yield TurnEnd(agent.role, "".join(chunks))
         return
     yield TurnEnd(agent.role, "".join(chunks))
-    if final_message is not None and getattr(final_message, "usage", None) is not None:
-        u = final_message.usage
-        yield UsageReport(
-            role=agent.role,
-            model=model,
-            input_tokens=getattr(u, "input_tokens", 0) or 0,
-            output_tokens=getattr(u, "output_tokens", 0) or 0,
-            cache_creation_input_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
-            cache_read_input_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
-        )
-
-
-VERDICT_MODES = ("decision_frame", "simple", "scorecard", "recommendation")
-DEFAULT_VERDICT_MODE = "decision_frame"
-
-SCORECARD_DIMENSIONS = ("MARKET", "TECH", "UX", "RISK")
-SCORECARD_LINE_RE = re.compile(
-    r"(MARKET|TECH|UX|RISK):\s*([1-5])\s*[-—:]\s*(.+?)(?=\n\s*[A-Z]+:|\Z)",
-    re.IGNORECASE | re.DOTALL,
-)
-
-RECOMMENDATION_ACTIONS = ("PROCEED", "PAUSE", "PIVOT", "KILL")
-ACTION_RE = re.compile(
-    r"ACTION:\s*(PROCEED|PAUSE|PIVOT|KILL)", re.IGNORECASE
-)
+    report = _usage_report(agent.role, model, final_message)
+    if report is not None:
+        yield report
 
 
 async def run_boardroom(
@@ -763,9 +590,7 @@ async def run_boardroom(
     model: str,
     max_tokens: int,
     ordered: bool = False,
-    seed: int | None = None,
     consume_directive: Callable[[], str | None] | None = None,
-    verdict_mode: str = DEFAULT_VERDICT_MODE,
 ) -> AsyncIterator[Event]:
     """Drive the boardroom discussion.
 
@@ -775,21 +600,11 @@ async def run_boardroom(
     or None. The returned text is embedded in every agent's user message
     for that phase via `format_transcript` / `format_verdict_prompt`.
 
-    `verdict_mode` controls how the verdict round is structured:
-    - `"decision_frame"` (default): each agent gives VERDICT + CONFIDENCE +
-      REASONING + DISCONFIRMING; the engine renders a stratified tally and
-      makes one extra LLM call to synthesize a decision frame.
-    - `"simple"`: each agent gives VERDICT + one sentence of reasoning.
-      No confidence, no synthesis call. Cheaper; suited for batch /
-      scripted runs that just want one number per idea.
+    The verdict round: each agent gives VERDICT + CONFIDENCE + REASONING +
+    DISCONFIRMING; the engine renders a stratified tally and makes one extra
+    LLM call to synthesize a decision frame.
     """
-    if verdict_mode not in VERDICT_MODES:
-        raise ValueError(
-            f"Unknown verdict_mode: {verdict_mode!r}. "
-            f"Expected one of: {', '.join(VERDICT_MODES)}"
-        )
-
-    rng = random.Random(seed)
+    rng = random.Random()
     transcript: list[Turn] = []
 
     def _next_directive() -> str | None:
@@ -818,65 +633,9 @@ async def run_boardroom(
     verdict_directive = _next_directive()
     yield VerdictRoundStart(directive=verdict_directive)
 
-    # Scorecard and recommendation modes have different per-agent shapes
-    # (no GOOD/BAD vote) so they get their own paths. The decision_frame
-    # and simple modes both produce Verdict events and share the per-agent
-    # loop below.
-    if verdict_mode == "scorecard":
-        score_reports: list[ScoreReport] = []
-        for agent in agents:
-            user_text = format_scorecard_prompt(
-                idea, transcript, agent.role, directive=verdict_directive,
-            )
-            full_text = ""
-            async for event in _stream_one(client, agent, user_text, model, max_tokens):
-                if isinstance(event, TurnEnd):
-                    full_text = event.full_text
-                yield event
-            scores, notes = parse_scorecard(full_text)
-            sr = ScoreReport(
-                role=agent.role,
-                scores=scores,
-                notes=notes,
-                text=full_text.strip(),
-            )
-            score_reports.append(sr)
-            yield sr
-        yield compute_scorecard_complete(score_reports)
-        return
-
-    if verdict_mode == "recommendation":
-        rec_reports: list[RecommendationReport] = []
-        for agent in agents:
-            user_text = format_recommendation_prompt(
-                idea, transcript, agent.role, directive=verdict_directive,
-            )
-            full_text = ""
-            async for event in _stream_one(client, agent, user_text, model, max_tokens):
-                if isinstance(event, TurnEnd):
-                    full_text = event.full_text
-                yield event
-            rr = RecommendationReport(
-                role=agent.role,
-                action=parse_action(full_text),
-                reasoning=parse_reasoning(full_text),
-                text=full_text.strip(),
-            )
-            rec_reports.append(rr)
-            yield rr
-        yield compute_recommendations_complete(rec_reports)
-        return
-
     collected_verdicts: list[Verdict] = []
-
-    # The verdict prompt and the per-agent Verdict shape both depend on the mode.
-    use_simple = verdict_mode == "simple"
-    prompt_builder = (
-        format_simple_verdict_prompt if use_simple else format_verdict_prompt
-    )
-
     for agent in agents:
-        user_text = prompt_builder(
+        user_text = format_verdict_prompt(
             idea, transcript, agent.role, directive=verdict_directive,
         )
         full_text = ""
@@ -888,35 +647,12 @@ async def run_boardroom(
             role=agent.role,
             verdict=parse_verdict(full_text),
             text=full_text.strip(),
-            # Simple mode doesn't ask for these and shouldn't pretend to
-            # have them. Leaving them None keeps `compute_tally`'s output
-            # in a degraded-but-honest "no strata" state.
-            confidence=None if use_simple else parse_confidence(full_text),
-            reasoning=None if use_simple else parse_reasoning(full_text),
-            disconfirming=None if use_simple else parse_disconfirming(full_text),
+            confidence=parse_confidence(full_text),
+            reasoning=parse_reasoning(full_text),
+            disconfirming=parse_disconfirming(full_text),
         )
         collected_verdicts.append(v)
         yield v
-
-    if use_simple:
-        # Raw tally only — no strata math, no headline, no synthesis.
-        good = bad = unclear = 0
-        for v in collected_verdicts:
-            if v.verdict == "GOOD":
-                good += 1
-            elif v.verdict == "BAD":
-                bad += 1
-            else:
-                unclear += 1
-        yield TallyComplete(
-            good=good,
-            bad=bad,
-            overall=overall_verdict(good, bad),
-            unclear=unclear,
-            # All other strata fields default to 0 / "" — renderers detect this
-            # via empty `headline` and fall back to the legacy display.
-        )
-        return
 
     tally = TallyComplete(**compute_tally(collected_verdicts))
     yield tally
