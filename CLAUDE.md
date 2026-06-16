@@ -68,47 +68,20 @@ the dispatcher itself.
   the `Event` union, and handle it in **both** renderers (`cli_renderer.py`
   and `tui.py`'s `_run_discussion`). Forgetting one renderer is the most
   common refactor bug.
-- **Verdict round modes** (`--verdict`): `decision_frame` (default),
-  `simple`, `scorecard`, and `recommendation`. The mode is plumbed from
-  `boardroom.py` into `engine.run_boardroom`'s `verdict_mode` parameter,
-  which dispatches to different verdict-prompt builders, per-agent event
-  types, and downstream rendering paths. The canonical list lives in
-  `engine.VERDICT_MODES`.
-- **`decision_frame` mode** asks for four structured fields per agent
-  (`VERDICT`, `CONFIDENCE: 1-5`, `REASONING`, `DISCONFIRMING`).
-  `engine.compute_tally` turns the parsed `Verdict` list into a stratified
-  tally (strong/lean/weak buckets, signed-conviction headline,
-  strong-dissent flag). After `TallyComplete`, the engine emits
+- **The verdict round** asks for four structured fields per agent
+  (`VERDICT`, `CONFIDENCE: 1-5`, `REASONING`, `DISCONFIRMING`) via
+  `format_verdict_prompt`. `engine.compute_tally` turns the parsed
+  `Verdict` list into a stratified tally (strong/lean/weak buckets,
+  signed-conviction headline, strong-dissent flag) and always sets a
+  non-empty `headline`. After `TallyComplete`, the engine emits
   `DecisionFrameStart` (renderers show a "Synthesizing…" indicator) and
   then makes one extra LLM call via `_synthesize_decision_frame` with a
   dedicated `SYNTHESIZER_SYSTEM` system prompt. The parsed result is
   yielded as a `DecisionFrame` event (case_for / case_against /
   biggest_unknown / conditions). Both renderers handle both events; the
   synthesizer's `UsageReport` flows through the cost panel like any
-  other call.
-- **`simple` mode** uses the original short prompt (just `VERDICT: GOOD/BAD`
-  + one sentence). The engine emits a `TallyComplete` with raw `good`/`bad`/
-  `overall` populated and all strata fields zero / empty `headline`. The
-  renderers detect the empty headline and fall back to the legacy
-  `N GOOD / M BAD → VERDICT` display. No `DecisionFrameStart` /
-  `DecisionFrame` events are emitted, so no synthesis LLM call fires —
-  this is the cheap / scriptable mode.
-- **`scorecard` mode** asks each agent for a 1-5 rating across four
-  dimensions (`MARKET`, `TECH`, `UX`, `RISK`, all framed so higher = better
-  including `RISK`). Per-agent results are emitted as `ScoreReport` events
-  (one per agent) followed by a single `ScorecardComplete` with
-  per-dimension averages and a composite. `Verdict` / `TallyComplete` /
-  `DecisionFrame*` events are **not** emitted in this mode. Both
-  renderers display a Rich `Table` (a real `rich.table.Table` rendered
-  to stdout / to RichLog). The sidebar `TallySummary` widget stays at
-  its placeholder — it's GOOD/BAD-specific.
-- **`recommendation` mode** asks each agent for an `ACTION` (one of
-  `PROCEED`, `PAUSE`, `PIVOT`, `KILL`) plus a 2-3 sentence rationale.
-  Per-agent results are emitted as `RecommendationReport` events
-  followed by a single `RecommendationsComplete` carrying action counts.
-  As with `scorecard`, no `Verdict` / `TallyComplete` / `DecisionFrame*`
-  events fire and the sidebar `TallySummary` stays at its placeholder.
-  Renderers show a per-agent list + a counts summary.
+  other call. (This used to be one of four `--verdict` modes; the
+  `simple` / `scorecard` / `recommendation` modes were removed.)
 - **Streaming partial output in the TUI** goes through the `Static#current`
   widget — `RichLog.write` is for fully-formed lines only. Don't write partial
   tokens to the log directly.
